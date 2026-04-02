@@ -577,6 +577,23 @@ class VMManager: NSObject, ObservableObject {
         """
         try userData.write(to: seedDir.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
 
+        // network-config — explicitly enable DHCP on all ethernet interfaces
+        // Without this, Ubuntu cloud images may leave the interface down
+        let networkConfig = """
+        version: 2
+        ethernets:
+          id0:
+            match:
+              driver: virtio_net
+            dhcp4: true
+            dhcp6: false
+          fallback:
+            match:
+              name: en*
+            dhcp4: true
+        """
+        try networkConfig.write(to: seedDir.appendingPathComponent("network-config"), atomically: true, encoding: .utf8)
+
         let seedISO = VMConfig.seedISOPath
         try? FileManager.default.removeItem(at: seedISO)
 
@@ -631,6 +648,10 @@ class VMManager: NSObject, ObservableObject {
             try FileManager.default.copyItem(
                 at: seedDir.appendingPathComponent("user-data"),
                 to: mountPoint.appendingPathComponent("user-data")
+            )
+            try FileManager.default.copyItem(
+                at: seedDir.appendingPathComponent("network-config"),
+                to: mountPoint.appendingPathComponent("network-config")
             )
 
             // Unmount
