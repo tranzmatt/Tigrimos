@@ -1,6 +1,4 @@
-# Built app bundles (too large for git)
-TigrimOS.app/
-TigrimOS_i.app/
+# Distribution
 *.dmg
 
 # macOS
