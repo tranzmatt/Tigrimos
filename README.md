@@ -82,6 +82,53 @@ swift build -c release
 
 Subsequent launches start in ~30 seconds (no re-download).
 
+## Connect a Local LLM (Ollama, llama.cpp, LM Studio)
+
+TigrimOS can use AI models running on your Mac — no cloud API key needed.
+
+### Step 1: Start your local model server on `0.0.0.0`
+
+The server **must** listen on `0.0.0.0` (all interfaces), not `127.0.0.1`. The VM connects through a network bridge, so localhost-only servers are unreachable.
+
+**llama.cpp / llama-server:**
+```bash
+llama-server -hf LiquidAI/LFM2.5-1.2B-Instruct-GGUF -c 4096 --port 8080 --host 0.0.0.0
+```
+
+**Ollama:**
+```bash
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+**LM Studio:**
+In LM Studio settings → Server → set host to `0.0.0.0`, then start the server.
+
+### Step 2: Configure TigrimOS
+
+In the TigrimOS web UI, go to **Settings → AI Provider**:
+
+| Field | llama.cpp | Ollama | LM Studio |
+|-------|-----------|--------|-----------|
+| **Provider** | OpenAI-Compatible (Local macOS) | Ollama (Local macOS) | LM Studio (Local macOS) |
+| **API URL** | `http://host.local:8080/v1` | `http://host.local:11434/v1` | `http://host.local:1234/v1` |
+| **Model** | Your model name (e.g. `LiquidAI/LFM2.5-1.2B-Instruct-GGUF`) | `llama3.2`, `mistral`, etc. | `local-model` |
+| **API Key** | `local` (any text) | `local` (any text) | `local` (any text) |
+
+> `host.local` is a special hostname inside the VM that routes to your Mac. It's set up automatically during provisioning.
+
+### Step 3: Test Connection
+
+Click **Test Connection** in Settings. If it succeeds, you're ready to chat.
+
+### Troubleshooting Local LLM
+
+| Problem | Solution |
+|---------|----------|
+| "fetch failed" | Make sure the server is running with `--host 0.0.0.0` |
+| "Connection error" | Check the port number matches your server |
+| "host.local not found" | Click **Reset VM** in toolbar → restart the app |
+| Server works in browser but not in TigrimOS | Your server is on `127.0.0.1` — restart with `0.0.0.0` |
+
 ## Key Features
 
 - **AI Chat with 16 Built-in Tools** — web search, Python, React, shell, files, skills, sub-agents
