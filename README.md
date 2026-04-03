@@ -418,7 +418,8 @@ TigrimOS/
 
 | Document | Description |
 |---|---|
-| [Technical Docs](tiger_cowork/docs/TECHNICAL.md) | Architecture, agent system, protocols, MCP setup, API endpoints |
+| [Platform Architecture](docs/TECHNICAL.md) | How TigrimOS runs across macOS Silicon, macOS Intel, and Windows — VM boot, provisioning, file sharing, security |
+| [Agent & Tools Docs](tiger_cowork/docs/TECHNICAL.md) | Agent system, tools, protocols, MCP setup, API endpoints |
 | [Changelog](tiger_cowork/docs/CHANGELOG.md) | Full version history and release notes |
 
 ## License
