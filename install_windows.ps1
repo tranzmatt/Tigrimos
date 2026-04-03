@@ -285,7 +285,7 @@ $progressWindow.Add_ContentRendered({
 
     $ps.AddScript({
         param($progressWindow, $progressFill, $progressPercent, $stepTitle, $stepStatus,
-              $stepTextBlocks, $barMaxWidth, $REPO_URL, $APP_URL, $PORT, $WSL_DISTRO, $LOG_FILE, $stepLabels, $sharedFolder)
+              $stepTextBlocks, $barMaxWidth, $REPO_URL, $APP_URL, $PORT, $WSL_DISTRO, $LOG_FILE, $stepLabels, $sharedFolder, $scriptDir)
 
         function Update-ProgressInner {
             param([int]$CurrentStep, [int]$TotalSteps, [string]$Title, [string]$Status)
@@ -575,20 +575,23 @@ Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRes
             Start-Sleep -Seconds 1
 
             # Start server in a minimized window — WSL session must stay alive for the server to persist
-            $serverBat = Join-Path (Split-Path -Parent $PSCommandPath) "TigrimOSServer.bat"
-            Start-Process -WindowStyle Minimized -FilePath $serverBat
+            $serverBat = Join-Path $scriptDir "TigrimOSServer.bat"
+            if (Test-Path $serverBat) {
+                Start-Process -WindowStyle Minimized -FilePath $serverBat
+            } else {
+                # Fallback: launch wsl directly
+                Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/c", "wsl -d $WSL_DISTRO -u root -- bash -c `"cd /opt/TigrimOS/tiger_cowork && NODE_ENV=production PORT=3001 node_modules/.bin/tsx server/index.ts > /tmp/tigrimos.log 2>&1`""
+            }
 
-            # Wait for server
+            # Wait for server using curl (faster than Invoke-WebRequest)
             $tries = 0
             $serverReady = $false
             while ($tries -lt 60) {
                 Start-Sleep -Seconds 2
                 $tries++
                 Update-ProgressInner 7 7 "Starting TigrimOS..." "Waiting for server to be ready... ($tries)"
-                try {
-                    $response = Invoke-WebRequest -Uri $APP_URL -UseBasicParsing -TimeoutSec 2 -ErrorAction SilentlyContinue
-                    if ($response.StatusCode -eq 200) { $serverReady = $true; break }
-                } catch {}
+                $curlExit = (Start-Process -FilePath "curl.exe" -ArgumentList "-s", "-o", "NUL", "--connect-timeout", "2", "--max-time", "3", "http://localhost:$PORT" -Wait -PassThru -WindowStyle Hidden).ExitCode
+                if ($curlExit -eq 0) { $serverReady = $true; break }
             }
 
             if (-not $serverReady) {
@@ -605,14 +608,13 @@ Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRes
             try {
                 $desktopPath = [Environment]::GetFolderPath("Desktop")
                 $shortcutPath = Join-Path $desktopPath "TigrimOS.lnk"
-                $scriptRoot = Split-Path -Parent $PSCommandPath
-                $startBat = Join-Path $scriptRoot "TigrimOSStart.bat"
+                $startBat = Join-Path $scriptDir "TigrimOSStart.bat"
 
                 if (Test-Path $startBat) {
                     $shell = New-Object -ComObject WScript.Shell
                     $shortcut = $shell.CreateShortcut($shortcutPath)
                     $shortcut.TargetPath = $startBat
-                    $shortcut.WorkingDirectory = $scriptRoot
+                    $shortcut.WorkingDirectory = $scriptDir
                     $shortcut.Description = "TigrimOS - AI Workspace"
                     $shortcut.Save()
                 }
@@ -642,7 +644,7 @@ Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRes
     }).AddArgument($progressWindow).AddArgument($progressFill).AddArgument($progressPercent).AddArgument(
         $stepTitle).AddArgument($stepStatus).AddArgument($stepTextBlocks).AddArgument(
         $barMaxWidth).AddArgument($REPO_URL).AddArgument(
-        $APP_URL).AddArgument($PORT).AddArgument($WSL_DISTRO).AddArgument($LOG_FILE).AddArgument($stepLabels).AddArgument($sharedFolder) | Out-Null
+        $APP_URL).AddArgument($PORT).AddArgument($WSL_DISTRO).AddArgument($LOG_FILE).AddArgument($stepLabels).AddArgument($sharedFolder).AddArgument((Split-Path -Parent $PSCommandPath)) | Out-Null
 
     $ps.BeginInvoke() | Out-Null
 })
