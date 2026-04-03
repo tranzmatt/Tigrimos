@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var vmManager: VMManager
     @State private var showConsole = false
     @State private var selectedTab: Tab = .app
+    @State private var showResetAlert = false
 
     enum Tab {
         case app, console, folders
@@ -56,6 +57,15 @@ struct ContentView: View {
                             .scaleEffect(0.7)
                     }
 
+                    // Reset VM button
+                    Button {
+                        showResetAlert = true
+                    } label: {
+                        Label("Reset VM", systemImage: "arrow.counterclockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .foregroundColor(.orange)
+
                     // Tab switcher
                     Picker("", selection: $selectedTab) {
                         Image(systemName: "globe").tag(Tab.app)
@@ -92,6 +102,14 @@ struct ContentView: View {
         .onAppear {
             vmManager.loadSharedFolderConfig()
         }
+        .alert("Reset VM?", isPresented: $showResetAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset", role: .destructive) {
+                Task { await vmManager.resetVM() }
+            }
+        } message: {
+            Text("This will stop the VM and delete its disk. On next start it will re-download and re-provision from scratch (5-10 minutes).")
+        }
     }
 
     @ViewBuilder
@@ -104,7 +122,7 @@ struct ContentView: View {
                     .font(.system(size: 64))
                     .foregroundColor(.secondary)
 
-                Text("Tiger Cowork is not running")
+                Text("TigrimOS is not running")
                     .font(.title3)
                     .foregroundColor(.secondary)
 
@@ -122,7 +140,7 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
-                Text("Runs Tiger Cowork inside a secure Ubuntu sandbox")
+                Text("Runs TigrimOS inside a secure Ubuntu sandbox")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

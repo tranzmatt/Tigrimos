@@ -1018,8 +1018,8 @@ function fromAnthropicResponse(data: any): any {
 }
 
 async function llmCall(messages: ChatMessage[], options: { tools?: any[]; model?: string; signal?: AbortSignal } = {}): Promise<any> {
-  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken } = await getApiConfig();
-  if (!apiKey) throw new Error("API key not configured");
+  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal } = await getApiConfig();
+  if (!apiKey && !isLocal) throw new Error("API key not configured");
 
   const sanitized = sanitizeMessages(messages);
   const settings = await getSettings();
@@ -1163,8 +1163,8 @@ export async function callTigerBotWithTools(
     return { content: result.content, toolResults: result.toolCalls?.map(t => ({ tool: t, result: { ok: true } })) };
   }
 
-  const { apiKey } = await getApiConfig();
-  if (!apiKey) {
+  const { apiKey, isLocal } = await getApiConfig();
+  if (!apiKey && !isLocal) {
     return { content: "API key not configured. Go to Settings to add your API key." };
   }
 
@@ -2043,9 +2043,9 @@ export async function callTigerBot(
   messages: ChatMessage[],
   systemPrompt?: string
 ): Promise<TigerBotResponse> {
-  const { apiKey } = await getApiConfig();
-  if (!apiKey) {
-    return { content: "TigerBot API key not configured. Go to Settings to add your API key." };
+  const { apiKey, isLocal } = await getApiConfig();
+  if (!apiKey && !isLocal) {
+    return { content: "API key not configured. Go to Settings to add your API key." };
   }
 
   const allMessages: ChatMessage[] = [];
@@ -2089,10 +2089,10 @@ export async function streamTigerBot(
   onChunk: (text: string) => void,
   onDone: () => void
 ): Promise<void> {
-  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken } = await getApiConfig();
+  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal } = await getApiConfig();
   const settings = await getSettings();
 
-  if (!apiKey) {
+  if (!apiKey && !isLocal) {
     onChunk("API key not configured. Go to Settings to add your API key.");
     onDone();
     return;

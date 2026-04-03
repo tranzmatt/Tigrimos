@@ -83,7 +83,7 @@ struct SettingsView: View {
                 Section("Shared Folder Policy") {
                     Text("Folders are shared via VirtioFS, mounted inside the VM.")
                     Text("Default permission: Read-only. Write access requires explicit toggle per folder.")
-                    Text("The Tiger Cowork source is mounted read-only and copied into the VM.")
+                    Text("The TigrimOS source is mounted read-only and copied into the VM.")
                 }
                 .font(.caption)
             }
@@ -104,14 +104,14 @@ struct SettingsView: View {
                 Text("v1.0.0")
                     .foregroundColor(.secondary)
 
-                Text("Secure sandbox for Tiger Cowork")
+                Text("Secure sandbox for TigrimOS")
                     .font(.subheadline)
 
                 Divider()
                     .frame(width: 200)
 
                 VStack(spacing: 8) {
-                    Text("Tiger Cowork v0.4.3")
+                    Text("TigrimOS v0.4.3")
                     Text("Ubuntu 22.04 VM via Virtualization.framework")
                     Text("Node.js 20 + Python 3 + Fastify")
                 }

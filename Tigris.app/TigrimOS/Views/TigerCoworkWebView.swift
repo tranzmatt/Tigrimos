@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-/// Embeds the Tiger Cowork web UI in a native WebView
+/// Embeds the TigrimOS web UI in a native WebView
 struct TigerCoworkWebView: NSViewRepresentable {
     let host: String
     let port: Int
@@ -20,7 +20,7 @@ struct TigerCoworkWebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
 
-        // Load Tiger Cowork at the VM's IP
+        // Load TigrimOS at the VM's IP
         let url = URL(string: "http://\(host):\(port)")!
         webView.load(URLRequest(url: url))
 

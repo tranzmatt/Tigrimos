@@ -84,7 +84,7 @@ struct SetupView: View {
             Text("Welcome to TigrimOS")
                 .font(.largeTitle.bold())
 
-            Text("Tiger Cowork runs inside a secure Ubuntu sandbox\non your Mac. No Docker required.")
+            Text("TigrimOS runs inside a secure Ubuntu sandbox\non your Mac. No Docker required.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -113,7 +113,7 @@ struct SetupView: View {
                 securityRow(
                     icon: "desktopcomputer",
                     title: "VM Isolation",
-                    detail: "Tiger Cowork runs in a real Ubuntu VM. It cannot access your Mac's processes, files, or network except through controlled channels."
+                    detail: "TigrimOS runs in a real Ubuntu VM. It cannot access your Mac's processes, files, or network except through controlled channels."
                 )
                 securityRow(
                     icon: "folder.badge.questionmark",
@@ -154,7 +154,7 @@ struct SetupView: View {
                 stepRow(number: 1, text: "Download Ubuntu 22.04 cloud image (~700MB)")
                 stepRow(number: 2, text: "Create a \(VMConfig.diskSizeGB)GB virtual disk")
                 stepRow(number: 3, text: "Install Node.js 20, Python 3, and dependencies")
-                stepRow(number: 4, text: "Deploy Tiger Cowork inside the VM")
+                stepRow(number: 4, text: "Deploy TigrimOS inside the VM")
                 stepRow(number: 5, text: "Start the web UI at localhost:\(VMConfig.hostForwardPort)")
             }
 

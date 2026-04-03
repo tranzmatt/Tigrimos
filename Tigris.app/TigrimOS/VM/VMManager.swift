@@ -80,7 +80,7 @@ class VMManager: NSObject, ObservableObject {
             state = .running
             appendConsole("[TigrimOS] VM started successfully")
 
-            // Step 6: Provision Tiger Cowork if needed
+            // Step 6: Provision TigrimOS if needed
             if !VMConfig.isProvisioned {
                 state = .provisioning
                 appendConsole("[TigrimOS] First run — provisioning via cloud-init (this takes several minutes)...")
@@ -211,7 +211,7 @@ class VMManager: NSObject, ObservableObject {
         // Shared folders via VirtioFS
         var directoryShares: [VZVirtioFileSystemDeviceConfiguration] = []
 
-        // Always share the Tiger Cowork source
+        // Always share the TigrimOS source
         if let srcDir = findTigerCoworkSource() {
             let share = VZVirtioFileSystemDeviceConfiguration(tag: "tiger-cowork")
             share.share = VZSingleDirectoryShare(
@@ -422,7 +422,7 @@ class VMManager: NSObject, ObservableObject {
         """
         try metaData.write(to: seedDir.appendingPathComponent("meta-data"), atomically: true, encoding: .utf8)
 
-        // user-data (cloud-init config to provision Tiger Cowork)
+        // user-data (cloud-init config to provision TigrimOS)
         let userData = """
         #cloud-config
         hostname: tigris
@@ -494,7 +494,7 @@ class VMManager: NSObject, ObservableObject {
               echo "[TigrimOS] Installing npm packages..."
               npm i -g clawhub tsx
 
-              echo "[TigrimOS] Setting up Tiger Cowork..."
+              echo "[TigrimOS] Setting up TigrimOS..."
               mkdir -p /app
 
               # Try to copy from VirtioFS mount
@@ -517,7 +517,7 @@ class VMManager: NSObject, ObservableObject {
               # Create systemd service
               cat > /etc/systemd/system/tiger-cowork.service << 'SVCEOF'
               [Unit]
-              Description=Tiger Cowork
+              Description=TigrimOS
               After=network.target
 
               [Service]
@@ -765,7 +765,7 @@ class VMManager: NSObject, ObservableObject {
                 vmIPAddress = arpIP
                 appendConsole("[TigrimOS] Found VM at \(arpIP) (ARP table)")
             } else {
-                // Method 2: TCP scan on port 22 (SSH, available before Tiger Cowork)
+                // Method 2: TCP scan on port 22 (SSH, available before TigrimOS)
                 let candidates = (2...20).map { "192.168.64.\($0)" }
                 for candidate in candidates {
                     if await tryTCPConnect(host: candidate, port: 22) {
@@ -786,7 +786,7 @@ class VMManager: NSObject, ObservableObject {
         // First check if port 3001 is even open
         let portOpen = await tryTCPConnect(host: ip, port: VMConfig.vmPort)
         if !portOpen {
-            appendConsole("[TigrimOS] Waiting for Tiger Cowork to start (port \(VMConfig.vmPort) not open on \(ip))...")
+            appendConsole("[TigrimOS] Waiting for TigrimOS to start (port \(VMConfig.vmPort) not open on \(ip))...")
             return
         }
 
@@ -811,7 +811,7 @@ class VMManager: NSObject, ObservableObject {
                         if !VMConfig.isProvisioned {
                             FileManager.default.createFile(atPath: VMConfig.provisionedMarker.path, contents: nil)
                         }
-                        appendConsole("[TigrimOS] Tiger Cowork is ready at http://\(ip):\(VMConfig.vmPort)")
+                        appendConsole("[TigrimOS] TigrimOS is ready at http://\(ip):\(VMConfig.vmPort)")
                     }
                     return
                 }
@@ -882,7 +882,7 @@ class VMManager: NSObject, ObservableObject {
         }
     }
 
-    /// HTTP check to see if Tiger Cowork port is responding
+    /// HTTP check to see if TigrimOS port is responding
     private func tryReachHost(_ host: String) async -> Bool {
         let url = URL(string: "http://\(host):\(VMConfig.vmPort)/")!
         var request = URLRequest(url: url, timeoutInterval: 1)
