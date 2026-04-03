@@ -6,22 +6,25 @@ let activeShell: ChildProcess | null = null;
 
 export function setupTerminalSocket(io: Server) {
   io.on("connection", (socket) => {
-    socket.on("terminal:start", () => {
+    socket.on("terminal:start", (opts?: { cols?: number; rows?: number }) => {
       // Kill existing shell if any
       if (activeShell && !activeShell.killed) {
         activeShell.kill();
       }
 
-      // Always run as root — this is inside a sandboxed VM,
-      // so root access is safe and needed for package installs,
-      // service management, and system configuration.
-      const shell = spawn("sudo", ["-i"], {
+      const cols = opts?.cols || 120;
+      const rows = opts?.rows || 30;
+
+      // Use `script` to allocate a real PTY — gives proper prompt,
+      // colors, tab completion, history, and ANSI support.
+      // `script -q /dev/null` creates a PTY without recording.
+      const shell = spawn("script", ["-q", "/dev/null", "-c", "sudo -i"], {
         cwd: "/",
         env: {
           ...process.env,
           TERM: "xterm-256color",
-          COLUMNS: "120",
-          LINES: "30",
+          COLUMNS: String(cols),
+          LINES: String(rows),
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -39,7 +42,7 @@ export function setupTerminalSocket(io: Server) {
       });
 
       shell.on("close", (code) => {
-        socket.emit("terminal:exit", { code });
+        socket.emit("terminal:exit", { code: code ?? 0 });
         activeShell = null;
       });
 
@@ -47,16 +50,18 @@ export function setupTerminalSocket(io: Server) {
         socket.emit("terminal:output", `\r\nError: ${err.message}\r\n`);
       });
 
+      // Forward user input directly — xterm.js sends raw key data
       socket.on("terminal:input", (data: string) => {
         if (shell && !shell.killed) {
           shell.stdin?.write(data);
         }
       });
 
+      // Handle terminal resize — send SIGWINCH via stty
       socket.on("terminal:resize", (size: { cols: number; rows: number }) => {
-        if (shell && !shell.killed) {
-          process.env.COLUMNS = String(size.cols);
-          process.env.LINES = String(size.rows);
+        if (shell && !shell.killed && size.cols > 0 && size.rows > 0) {
+          // Write stty command to resize the PTY
+          shell.stdin?.write(`stty cols ${size.cols} rows ${size.rows}\n`);
         }
       });
 
