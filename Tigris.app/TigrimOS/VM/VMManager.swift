@@ -414,9 +414,10 @@ class VMManager: NSObject, ObservableObject {
         let seedDir = VMConfig.appSupportDir.appendingPathComponent("seed")
         try FileManager.default.createDirectory(at: seedDir, withIntermediateDirectories: true)
 
-        // meta-data
+        // meta-data — unique instance-id forces cloud-init to re-run on fresh provision
+        let instanceId = "tigris-vm-\(Int(Date().timeIntervalSince1970))"
         let metaData = """
-        instance-id: tigris-vm-001
+        instance-id: \(instanceId)
         local-hostname: tigris
         """
         try metaData.write(to: seedDir.appendingPathComponent("meta-data"), atomically: true, encoding: .utf8)
@@ -721,17 +722,17 @@ class VMManager: NSObject, ObservableObject {
     private func checkServiceHealth() async {
         guard state == .running || state == .provisioning else { return }
 
-        // Try to detect VM IP from console output if not yet known
-        if vmIPAddress == nil {
-            vmIPAddress = detectVMIP()
-            if let ip = vmIPAddress {
-                appendConsole("[TigrimOS] Detected VM IP: \(ip)")
+        // Always re-check console marker (it's the most reliable source)
+        if let consoleIP = detectVMIP() {
+            if vmIPAddress != consoleIP {
+                vmIPAddress = consoleIP
+                appendConsole("[TigrimOS] Detected VM IP: \(consoleIP)")
             }
         }
 
         // Fallback: try arp table and TCP scan to find VM
         if vmIPAddress == nil {
-            // Method 1: Check ARP table for VMs on vmnet bridge
+            // Method 1: Check ARP table for VMs on vmnet bridge (skip .1 gateway)
             if let arpIP = await findVMviaARP() {
                 vmIPAddress = arpIP
                 appendConsole("[TigrimOS] Found VM at \(arpIP) (ARP table)")
@@ -808,7 +809,8 @@ class VMManager: NSObject, ObservableObject {
                         if let start = line.firstIndex(of: "("),
                            let end = line.firstIndex(of: ")") {
                             let ip = String(line[line.index(after: start)..<end])
-                            if isValidVMIP(ip) && ip.hasPrefix("192.168.") {
+                            // Skip gateway IPs (*.*.*.1) — those are the host, not the VM
+                            if isValidVMIP(ip) && ip.hasPrefix("192.168.") && !ip.hasSuffix(".1") {
                                 return ip
                             }
                         }
