@@ -473,7 +473,7 @@ Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRes
             $repoExists = wsl -d $WSL_DISTRO -- bash -c 'test -d /opt/TigrimOS/.git && echo yes || echo no' 2>&1
             if ($repoExists -match "yes") {
                 Update-ProgressInner 3 7 "Updating TigrimOS..." "Pulling latest changes"
-                wsl -d $WSL_DISTRO -- bash -c 'cd /opt/TigrimOS && git pull' *>> $LOG_FILE
+                wsl -d $WSL_DISTRO -u root -- bash -c 'cd /opt/TigrimOS && git config --global --add safe.directory /opt/TigrimOS && git checkout -- . && git pull' *>> $LOG_FILE
             } else {
                 # Install git inside WSL if needed
                 wsl -d $WSL_DISTRO -u root -- bash -c 'which git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git)' *>> $LOG_FILE
@@ -574,8 +574,8 @@ Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRes
             wsl -d $WSL_DISTRO -u root -- bash -c "pkill -f 'node.*server' 2>/dev/null; pkill -f 'tsx.*index' 2>/dev/null; true"
             Start-Sleep -Seconds 1
 
-            # Start server (use Start-Process so wsl doesn't block the installer)
-            Start-Process -WindowStyle Hidden -FilePath "wsl" -ArgumentList "-d", $WSL_DISTRO, "-u", "root", "--", "bash", "-c", "cd /opt/TigrimOS/tiger_cowork && NODE_ENV=production PORT=3001 node_modules/.bin/tsx server/index.ts > /tmp/tigrimos.log 2>&1"
+            # Start server in a minimized window — WSL session must stay alive for the server to persist
+            Start-Process -WindowStyle Minimized -FilePath "wsl" -ArgumentList "-d", $WSL_DISTRO, "-u", "root", "--", "bash", "-c", "cd /opt/TigrimOS/tiger_cowork && NODE_ENV=production PORT=3001 node_modules/.bin/tsx server/index.ts 2>&1 | tee /tmp/tigrimos.log"
 
             # Wait for server
             $tries = 0

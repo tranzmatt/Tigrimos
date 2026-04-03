@@ -30,14 +30,14 @@ if %ERRORLEVEL% neq 0 (
 
 :: Kill any existing TigrimOS server
 echo   Stopping any existing TigrimOS server...
-wsl -d TigrimOS -- bash -c "pkill -f 'node.*server' 2>/dev/null; pkill -f 'tsx.*index' 2>/dev/null; true"
+wsl -d TigrimOS -u root -- bash -c "pkill -f 'node.*server' 2>/dev/null; pkill -f 'tsx.*index' 2>/dev/null; true"
 timeout /t 1 /nobreak >nul
 
-:: Start TigrimOS server inside WSL2
+:: Start TigrimOS server inside WSL2 in a minimized window
+:: The WSL session must stay alive for the server to keep running
 echo   Starting TigrimOS server...
 echo.
-
-start /b "" wsl -d TigrimOS -u root -- bash -c "cd /opt/TigrimOS/tiger_cowork && NODE_ENV=production PORT=3001 node_modules/.bin/tsx server/index.ts >> /tmp/tigrimos.log 2>&1"
+start "TigrimOS Server" /min wsl -d TigrimOS -u root -- bash -c "cd /opt/TigrimOS/tiger_cowork && NODE_ENV=production PORT=3001 node_modules/.bin/tsx server/index.ts 2>&1 | tee /tmp/tigrimos.log"
 
 echo   Waiting for server to start...
 set TRIES=0
@@ -53,8 +53,8 @@ if %ERRORLEVEL% equ 0 goto :server_ready
 if %TRIES% geq 30 (
     echo.
     echo   [WARNING] Server did not respond in time.
-    echo   Check logs: wsl -d TigrimOS -- cat /tmp/tigrimos.log
-    echo   Opening browser anyway...
+    echo   Check logs: wsl -d TigrimOS -u root -- cat /tmp/tigrimos.log
+    echo   Opening anyway...
     goto :open_browser
 )
 echo   Still waiting... (%TRIES%)
@@ -76,8 +76,7 @@ if exist "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" (
     start "" "http://localhost:3001"
 )
 
-echo   TigrimOS is running in background.
-echo   To stop: wsl -d TigrimOS -- pkill -f "node.*server"
 echo.
-echo   Press any key to close this window (server keeps running)...
-pause >nul
+echo   TigrimOS is running. The server runs in the minimized window.
+echo   To stop: close the "TigrimOS Server" window, or run TigrimOSStop.bat
+echo.
