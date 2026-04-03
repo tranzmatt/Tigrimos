@@ -1015,7 +1015,7 @@ export default function SettingsPage() {
                     background: terminalRunning ? "#3fb950" : "#f85149",
                   }} />
                   <span style={{ fontSize: 12, color: "#8b949e", fontFamily: "monospace" }}>
-                    {terminalRunning ? "bash — sandbox" : "disconnected"}
+                    {terminalRunning ? "root@tigris — sandbox" : "disconnected"}
                   </span>
                 </div>
                 <button
@@ -1055,9 +1055,9 @@ export default function SettingsPage() {
                   borderTop: "1px solid #30363d", background: "#0d1117",
                 }}>
                   <span style={{
-                    padding: "8px 4px 8px 12px", color: "#3fb950",
+                    padding: "8px 4px 8px 12px", color: "#f85149",
                     fontFamily: "monospace", fontSize: 13, userSelect: "none",
-                  }}>$</span>
+                  }}>#</span>
                   <input
                     ref={terminalInputRef}
                     value={terminalInput}

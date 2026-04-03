@@ -12,20 +12,16 @@ export function setupTerminalSocket(io: Server) {
         activeShell.kill();
       }
 
-      // Use sudo bash so users can install packages, manage services, etc.
-      // The tigris user has NOPASSWD sudo configured by cloud-init.
-      const useRoot = process.getuid?.() !== 0;
-      const cmd = useRoot ? "sudo" : "/bin/bash";
-      const args = useRoot ? ["/bin/bash", "-l"] : ["-l"];
-
-      const shell = spawn(cmd, args, {
-        cwd: process.env.SANDBOX_DIR || process.cwd(),
+      // Always run as root — this is inside a sandboxed VM,
+      // so root access is safe and needed for package installs,
+      // service management, and system configuration.
+      const shell = spawn("sudo", ["-i"], {
+        cwd: "/",
         env: {
           ...process.env,
           TERM: "xterm-256color",
           COLUMNS: "120",
           LINES: "30",
-          HOME: useRoot ? "/root" : (process.env.HOME || "/home/tigris"),
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -58,7 +54,6 @@ export function setupTerminalSocket(io: Server) {
       });
 
       socket.on("terminal:resize", (size: { cols: number; rows: number }) => {
-        // Update env for new processes
         if (shell && !shell.killed) {
           process.env.COLUMNS = String(size.cols);
           process.env.LINES = String(size.rows);
@@ -83,24 +78,17 @@ export function setupTerminalSocket(io: Server) {
 }
 
 export async function terminalRoutes(fastify: FastifyInstance) {
-  // Simple exec endpoint for one-off commands
+  // Simple exec endpoint for one-off commands (always as root)
   fastify.post<{ Body: { command: string } }>("/exec", async (request) => {
     const { command } = request.body;
     if (!command) return { error: "No command provided" };
 
     return new Promise((resolve) => {
-      const useRoot = process.getuid?.() !== 0;
-      const proc = useRoot
-        ? spawn("sudo", ["/bin/bash", "-c", command], {
-            cwd: process.env.SANDBOX_DIR || process.cwd(),
-            env: { ...process.env, TERM: "dumb" },
-            timeout: 30000,
-          })
-        : spawn("/bin/bash", ["-c", command], {
-            cwd: process.env.SANDBOX_DIR || process.cwd(),
-            env: { ...process.env, TERM: "dumb" },
-            timeout: 30000,
-          });
+      const proc = spawn("sudo", ["/bin/bash", "-c", command], {
+        cwd: process.env.SANDBOX_DIR || process.cwd(),
+        env: { ...process.env, TERM: "dumb" },
+        timeout: 30000,
+      });
 
       let stdout = "";
       let stderr = "";
