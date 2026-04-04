@@ -744,7 +744,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
                 pendingText = "\n\n---\n**Agent Results:**\n";
                 for (const pr of pendingResults) {
                   pendingText += `\n**${pr.agentName}:**\n${pr.result}\n`;
-                  if (pr.outputFiles) outputFiles.push(...pr.outputFiles);
+                  if (pr.outputFiles) { for (const f of pr.outputFiles) { if (!outputFiles.includes(f)) outputFiles.push(f); } }
                 }
               }
 
@@ -866,7 +866,11 @@ img.save('${tmpOut}', 'JPEG', quality=80)
             pendingResultText = "\n\n---\n**Agent Results:**\n";
             for (const pr of pendingResults) {
               pendingResultText += `\n**${pr.agentName}:**\n${pr.result}\n`;
-              if (pr.outputFiles) outputFiles.push(...pr.outputFiles);
+              if (pr.outputFiles) {
+                for (const f of pr.outputFiles) {
+                  if (!outputFiles.includes(f)) outputFiles.push(f);
+                }
+              }
             }
           }
         }
@@ -912,7 +916,11 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               pendingOnError = "\n\n---\n**Agent Results (collected after error):**\n";
               for (const pr of pendingResults) {
                 pendingOnError += `\n**${pr.agentName}:**\n${pr.result}\n`;
-                if (pr.outputFiles) outputFiles.push(...pr.outputFiles);
+                if (pr.outputFiles) {
+                  for (const f of pr.outputFiles) {
+                    if (!outputFiles.includes(f)) outputFiles.push(f);
+                  }
+                }
               }
             }
           }
@@ -1427,7 +1435,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
                 pendingText = "\n\n---\n**Agent Results:**\n";
                 for (const pr of pendingResults) {
                   pendingText += `\n**${pr.agentName}:**\n${pr.result}\n`;
-                  if (pr.outputFiles) outputFiles.push(...pr.outputFiles);
+                  if (pr.outputFiles) { for (const f of pr.outputFiles) { if (!outputFiles.includes(f)) outputFiles.push(f); } }
                 }
               }
 
@@ -1540,7 +1548,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
             projPendingText = "\n\n---\n**Agent Results:**\n";
             for (const pr of pendingResults) {
               projPendingText += `\n**${pr.agentName}:**\n${pr.result}\n`;
-              if (pr.outputFiles) outputFiles.push(...pr.outputFiles);
+              if (pr.outputFiles) { for (const f of pr.outputFiles) { if (!outputFiles.includes(f)) outputFiles.push(f); } }
             }
           }
         }
@@ -1585,7 +1593,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               projPendingOnError = "\n\n---\n**Agent Results (collected after error):**\n";
               for (const pr of pendingResults) {
                 projPendingOnError += `\n**${pr.agentName}:**\n${pr.result}\n`;
-                if (pr.outputFiles) outputFiles.push(...pr.outputFiles);
+                if (pr.outputFiles) { for (const f of pr.outputFiles) { if (!outputFiles.includes(f)) outputFiles.push(f); } }
               }
             }
           }

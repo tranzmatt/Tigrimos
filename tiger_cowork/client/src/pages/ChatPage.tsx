@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -290,13 +290,25 @@ export default function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { connected, sendMessage, onChunk, onResponse, onStatus } = useSocket();
 
-  // Collect all output files from messages for the right panel
-  const allOutputFiles = messages.reduce<{ files: string[]; msgIndex: number }[]>((acc, msg, i) => {
-    if (msg.files && msg.files.length > 0) {
-      acc.push({ files: msg.files, msgIndex: i });
+  // Collect all unique output files from messages for the right panel
+  const allOutputFiles = useMemo(() => {
+    const seen = new Set<string>();
+    const groups: { files: string[]; msgIndex: number }[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.files && msg.files.length > 0) {
+        const uniqueFiles = msg.files.filter(f => {
+          if (seen.has(f)) return false;
+          seen.add(f);
+          return true;
+        });
+        if (uniqueFiles.length > 0) {
+          groups.push({ files: uniqueFiles, msgIndex: i });
+        }
+      }
     }
-    return acc;
-  }, []);
+    return groups;
+  }, [messages]);
 
   useEffect(() => {
     api.getSessions().then((s: Session[]) => {
