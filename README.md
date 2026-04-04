@@ -175,68 +175,61 @@ Use the terminal to install additional tools, manage services, or debug the sand
 
 ### First-Time Setup: Claude Code CLI
 
-To use **Claude Code** as an agent provider, install it once via the terminal:
-
 1. Go to **Settings → Terminal → Open Terminal**
-2. Install:
+2. Install and login:
    ```bash
    npm i -g @anthropic-ai/claude-code
    ln -sf /root/.local/bin/claude /usr/local/bin/claude
-   ```
-3. Authenticate (choose one):
-
-   **Option A — API key:**
-   ```bash
-   export ANTHROPIC_API_KEY=sk-ant-...
-   echo 'export ANTHROPIC_API_KEY=sk-ant-...' >> /root/.bashrc
-   ```
-
-   **Option B — OAuth login (recommended):**
-   ```bash
    claude login
    ```
-   This uses a device code flow — it shows a URL you open in your browser to authorize. No localhost callback needed, works inside the sandbox.
+   A URL will appear — open it in your browser and authorize. That's it.
 
-4. Test it:
+   Or use an API key instead:
    ```bash
-   claude --version
+   echo 'export ANTHROPIC_API_KEY=sk-ant-...' >> /root/.bashrc && source /root/.bashrc
    ```
-
-Claude Code is now available as an agent type in the Agent Editor. Set the model to `claude-code` or `claude-code:sonnet` in the agent configuration.
 
 ### First-Time Setup: Codex CLI
 
-To use **OpenAI Codex CLI** as an agent provider:
-
 1. Go to **Settings → Terminal → Open Terminal**
-2. Install:
+2. Install and login:
    ```bash
    npm i -g @openai/codex
-   ```
-3. Authenticate (choose one):
-
-   **Option A — API key:**
-   ```bash
-   export OPENAI_API_KEY=sk-...
-   echo 'export OPENAI_API_KEY=sk-...' >> /root/.bashrc
-   ```
-
-   **Option B — Device auth login:**
-   ```bash
    codex login --device-auth
    ```
-   This uses a device code flow — it shows a URL and code to authorize in your browser. Works inside the sandbox (standard `codex login` uses a localhost callback which cannot work inside the VM).
+   A URL and code will appear — open the URL in your browser and enter the code. That's it.
 
-4. Test it:
+   Or use an API key instead:
    ```bash
-   codex --version
+   echo 'export OPENAI_API_KEY=sk-...' >> /root/.bashrc && source /root/.bashrc
    ```
 
-Codex CLI is now available as an agent type in the Agent Editor. Set the model to `codex` or `codex:o3` in the agent configuration.
+> **Important:** Use `codex login --device-auth` (not `codex login`) — standard OAuth uses a localhost callback that can't reach the sandbox.
 
-> **Important:** Standard `codex login` (without `--device-auth`) will **not work** inside the sandbox because it uses a localhost OAuth callback that can't reach the VM. Always use `codex login --device-auth` or set `OPENAI_API_KEY` directly.
+### Using Claude Code and Codex as Agent Coders
 
-> **Note:** These CLI tools are installed **inside the sandbox** — they cannot access your host system. API keys and credentials stored in the sandbox are isolated from your host environment.
+Once installed and logged in, you can assign Claude Code or Codex as the AI model for any agent in the **Agent Editor**:
+
+1. Go to **Settings → Agent Editor** (or the **Agents** page)
+2. Create or edit an agent
+3. Set the **Model** field to:
+
+   | Model value | What it uses |
+   |---|---|
+   | `claude-code` | Claude Code CLI (default model) |
+   | `claude-code:sonnet` | Claude Code CLI with Sonnet model |
+   | `claude-code:opus` | Claude Code CLI with Opus model |
+   | `codex` | Codex CLI (default model) |
+   | `codex:o3` | Codex CLI with o3 model |
+   | `codex:o4-mini` | Codex CLI with o4-mini model |
+
+4. Save the agent configuration
+
+These agents run as **autonomous coders** — they have their own tool loop with file reading, editing, shell commands, and code execution. They work independently within the sandbox, reading and writing files, running tests, and iterating on code.
+
+You can mix them in a **multi-agent swarm** — for example, one agent using `claude-code:opus` for architecture decisions and another using `codex:o3` for implementation, coordinated by the swarm orchestrator.
+
+> **Note:** All CLI tools run **inside the sandbox** — they cannot access your host system. API keys and credentials are isolated from your host environment.
 
 ## Security Model
 
