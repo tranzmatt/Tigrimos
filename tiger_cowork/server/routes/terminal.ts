@@ -1,89 +1,128 @@
 import { FastifyInstance } from "fastify";
-import { spawn, ChildProcess } from "child_process";
+import { spawn } from "child_process";
 import { Server } from "socket.io";
 
-let activeShell: ChildProcess | null = null;
+let activePty: any = null;
 
 export function setupTerminalSocket(io: Server) {
+  // Dynamically import node-pty (native module)
+  let pty: any = null;
+  try {
+    pty = require("node-pty");
+  } catch {
+    console.warn("[Terminal] node-pty not available — terminal will use fallback mode");
+  }
+
   io.on("connection", (socket) => {
     socket.on("terminal:start", (opts?: { cols?: number; rows?: number }) => {
-      // Kill existing shell if any
-      if (activeShell && !activeShell.killed) {
-        activeShell.kill();
+      // Kill existing session
+      if (activePty) {
+        try { activePty.kill(); } catch {}
+        activePty = null;
       }
 
       const cols = opts?.cols || 120;
       const rows = opts?.rows || 30;
 
-      // Use `script` to allocate a real PTY — gives proper prompt,
-      // colors, tab completion, history, and ANSI support.
-      // `script -q /dev/null` creates a PTY without recording.
-      const shell = spawn("script", ["-q", "/dev/null", "-c", "sudo -i"], {
-        cwd: "/",
-        env: {
-          ...process.env,
-          TERM: "xterm-256color",
-          COLUMNS: String(cols),
-          LINES: String(rows),
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      if (pty) {
+        // --- node-pty mode: real PTY with proper resize support ---
+        const shell = pty.spawn("sudo", ["-i"], {
+          name: "xterm-256color",
+          cols,
+          rows,
+          cwd: "/",
+          env: {
+            ...process.env,
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+          },
+        });
 
-      activeShell = shell;
+        activePty = shell;
+        socket.emit("terminal:started");
 
-      socket.emit("terminal:started");
+        shell.onData((data: string) => {
+          socket.emit("terminal:output", data);
+        });
 
-      shell.stdout?.on("data", (data: Buffer) => {
-        socket.emit("terminal:output", data.toString());
-      });
+        shell.onExit(({ exitCode }: { exitCode: number }) => {
+          socket.emit("terminal:exit", { code: exitCode });
+          activePty = null;
+        });
 
-      shell.stderr?.on("data", (data: Buffer) => {
-        socket.emit("terminal:output", data.toString());
-      });
+        socket.on("terminal:input", (data: string) => {
+          if (activePty) {
+            shell.write(data);
+          }
+        });
 
-      shell.on("close", (code) => {
-        socket.emit("terminal:exit", { code: code ?? 0 });
-        activeShell = null;
-      });
+        socket.on("terminal:resize", (size: { cols: number; rows: number }) => {
+          if (activePty && size.cols > 0 && size.rows > 0) {
+            try { shell.resize(size.cols, size.rows); } catch {}
+          }
+        });
 
-      shell.on("error", (err) => {
-        socket.emit("terminal:output", `\r\nError: ${err.message}\r\n`);
-      });
+        socket.on("disconnect", () => {
+          if (activePty) {
+            try { shell.kill(); } catch {}
+            activePty = null;
+          }
+        });
+      } else {
+        // --- Fallback: script-based PTY (no resize support) ---
+        const { spawn: spawnChild } = require("child_process");
+        const shell = spawnChild("script", ["-q", "/dev/null", "-c", "sudo -i"], {
+          cwd: "/",
+          env: {
+            ...process.env,
+            TERM: "xterm-256color",
+            COLUMNS: String(cols),
+            LINES: String(rows),
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
 
-      // Forward user input directly — xterm.js sends raw key data
-      socket.on("terminal:input", (data: string) => {
-        if (shell && !shell.killed) {
-          shell.stdin?.write(data);
-        }
-      });
+        activePty = shell;
+        socket.emit("terminal:started");
 
-      // Handle terminal resize — send SIGWINCH via stty
-      socket.on("terminal:resize", (size: { cols: number; rows: number }) => {
-        if (shell && !shell.killed && size.cols > 0 && size.rows > 0) {
-          // Write stty command to resize the PTY
-          shell.stdin?.write(`stty cols ${size.cols} rows ${size.rows}\n`);
-        }
-      });
+        shell.stdout?.on("data", (data: Buffer) => {
+          socket.emit("terminal:output", data.toString());
+        });
+        shell.stderr?.on("data", (data: Buffer) => {
+          socket.emit("terminal:output", data.toString());
+        });
+        shell.on("close", (code: number) => {
+          socket.emit("terminal:exit", { code: code ?? 0 });
+          activePty = null;
+        });
 
-      socket.on("disconnect", () => {
-        if (shell && !shell.killed) {
-          shell.kill();
-          activeShell = null;
-        }
-      });
+        socket.on("terminal:input", (data: string) => {
+          if (shell && !shell.killed) {
+            shell.stdin?.write(data);
+          }
+        });
+
+        socket.on("disconnect", () => {
+          if (shell && !shell.killed) {
+            shell.kill();
+            activePty = null;
+          }
+        });
+      }
     });
 
     socket.on("terminal:stop", () => {
-      if (activeShell && !activeShell.killed) {
-        activeShell.kill();
-        activeShell = null;
+      if (activePty) {
+        try {
+          if (typeof activePty.kill === "function") activePty.kill();
+        } catch {}
+        activePty = null;
       }
     });
   });
 }
 
 export async function terminalRoutes(fastify: FastifyInstance) {
-  // Simple exec endpoint for one-off commands (always as root)
   fastify.post<{ Body: { command: string } }>("/exec", async (request) => {
     const { command } = request.body;
     if (!command) return { error: "No command provided" };
