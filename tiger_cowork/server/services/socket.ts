@@ -1745,13 +1745,22 @@ img.save('${tmpOut}', 'JPEG', quality=80)
 }
 
 // ─── Stale task cleanup ───
-// Periodically remove tasks that have been running for too long (likely orphaned)
-const STALE_TASK_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
-setInterval(() => {
+// Periodically remove tasks that have been running for too long (likely orphaned).
+// Reads settings.staleTaskMaxAge (minutes). 0 = disabled (infinite). Default: 0.
+setInterval(async () => {
+  let maxAgeMin: number;
+  try {
+    const s = await getSettings();
+    maxAgeMin = s.staleTaskMaxAge ?? 0;
+  } catch {
+    maxAgeMin = 0;
+  }
+  if (maxAgeMin <= 0) return; // disabled — never auto-cleanup
+  const maxAgeMs = maxAgeMin * 60 * 1000;
   const now = Date.now();
   for (const [taskId, task] of activeTasks.entries()) {
     const age = now - new Date(task.startedAt).getTime();
-    if (age > STALE_TASK_MAX_AGE_MS) {
+    if (age > maxAgeMs) {
       console.log(`[Cleanup] Removing stale task ${taskId} (age: ${Math.round(age / 60000)}m, session: ${task.sessionId})`);
       const controller = taskAbortControllers.get(taskId);
       if (controller) {

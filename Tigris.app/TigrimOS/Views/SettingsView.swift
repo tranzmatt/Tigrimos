@@ -158,17 +158,17 @@ struct SettingsView: View {
                 Text("TigrimOS")
                     .font(.largeTitle.bold())
 
-                Text("v1.0.0")
+                Text("v1.1.0")
                     .foregroundColor(.secondary)
 
-                Text("Secure sandbox for TigrimOS")
+                Text("AI Agent Workspace with Remote Agents")
                     .font(.subheadline)
 
                 Divider()
                     .frame(width: 200)
 
                 VStack(spacing: 8) {
-                    Text("TigrimOS Swarm Agents")
+                    Text("TigrimOS v1.1.0")
                     Text("Ubuntu 22.04 VM via Virtualization.framework")
                     Text("Node.js 20 + Python 3 + Fastify")
                 }

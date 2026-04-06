@@ -77,6 +77,7 @@ export interface Settings {
   remotePollInterval?: number;   // seconds — how often to poll remote agent (default: 2)
   remoteIdleTimeout?: number;    // seconds — abort if no progress for this long (default: 60)
   remoteMaxTimeout?: number;     // seconds — hard cap regardless of activity (default: 1800)
+  staleTaskMaxAge?: number;      // minutes — auto-kill tasks older than this; 0 = disabled (default: 0)
   [key: string]: any;
 }
 

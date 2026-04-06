@@ -67,8 +67,8 @@ AI-generated code and shell commands **cannot escape the sandbox** or touch your
    brew install qemu
    ```
 3. Download the release zip for your Mac from [Releases](https://github.com/Sompote/Tigrimos/releases):
-   - **Apple Silicon** (M1/M2/M3/M4): `TigrimOS-v1.0.0-macOS-AppleSilicon.zip`
-   - **Intel**: `TigrimOS-v1.0.0-macOS-Intel.zip`
+   - **Apple Silicon** (M1/M2/M3/M4): `TigrimOS-v1.1.0-macOS-AppleSilicon.zip`
+   - **Intel**: `TigrimOS-v1.1.0-macOS-Intel.zip`
 4. Unzip — you get `TigrimOS.app` (or `TigrimOS_i.app`) and `tiger_cowork/` folder
 5. Keep both in the **same directory** (the app needs `tiger_cowork/` next to it)
 6. Double-click the `.app` to launch
@@ -157,8 +157,9 @@ Click **Test Connection** in Settings. If it succeeds, you're ready to chat.
 
 - **AI Chat with 16 Built-in Tools** — web search, Python, React, shell, files, skills, sub-agents
 - **Mix Any Model per Agent** — assign different AI providers per agent (API, Claude Code CLI, Codex CLI)
-- **Parallel Multi-Agent System** — 7 orchestration topologies, 4 communication protocols, P2P swarm governance
-- **Remote Agents** — delegate tasks to TigrimOS instances on other machines; orchestrator auto-selects agents by persona and responsibility
+- **Parallel Multi-Agent System** — 7 orchestration topologies (hierarchical, mesh, hybrid, P2P, P2P+orchestrator, pipeline, broadcast), 4 communication protocols, P2P swarm governance with blackboard bidding
+- **Swarm Communication Protocols** — TCP (private 1-on-1 channels), Bus (broadcast to all), Blackboard (P2P auction: propose → bid → award → execute), Mesh (any agent can talk to any other)
+- **Remote Agents** — delegate tasks to TigrimOS instances on other machines over the network; orchestrator auto-selects agents by persona and responsibility; fully peer-to-peer (any machine can be orchestrator or worker)
 - **Built-in Terminal** — full xterm.js terminal with root access to the Ubuntu sandbox (install packages, manage services, run CLI tools)
 - **Minecraft Task Monitor** — live pixel-art characters with speech bubbles showing agent activity and remote progress
 - **Long-Running Session Stability** — sliding window compression, smart tool result handling, checkpoint recovery
@@ -275,9 +276,24 @@ Agent Editor YAML:                      Agent Editor YAML:
 
 | Mode | Tool | How |
 |------|------|-----|
-| **Spawn Agent** (YAML) | `spawn_subagent` | Define remote agents in YAML → orchestrator spawns them by agentId |
-| **Live Session** (YAML) | `send_task` / `wait_result` | Persistent sessions with protocol tools (TCP, Bus, Mesh) |
-| **Direct** | `remote_task` | AI picks a remote instance directly from the available list |
+| **Spawn Agent** (YAML) | `spawn_subagent` | Define remote agents in YAML → orchestrator spawns them by agentId. Each agent runs as a one-shot LLM call and returns a result. |
+| **Live Session** (YAML) | `send_task` / `wait_result` | Persistent agent sessions connected via Socket.io. Agents stay alive and can communicate using protocol tools (TCP, Bus, Mesh, Blackboard). Supports parallel execution. |
+| **Direct** | `remote_task` | AI picks a remote instance directly from the available list — no YAML config needed. |
+
+### Swarm Communication Protocols
+
+When using **Live Session** mode, agents can communicate with each other using these protocols:
+
+| Protocol | Tool | Description |
+|----------|------|-------------|
+| **TCP** | `proto_tcp_send` / `proto_tcp_read` | Private 1-on-1 channel between two agents. Use for direct messages, data exchange, and coordination. |
+| **Bus** | `proto_bus_publish` / `proto_bus_subscribe` | Broadcast channel — all bus-connected agents see messages. Use for announcements, status updates, shared state. |
+| **Blackboard** | `bb_propose` / `bb_bid` / `bb_award` | P2P auction system — propose a task, agents bid based on confidence, orchestrator awards the winner, then `send_task` to execute. |
+| **Mesh** | `send_task` (any → any) | Any mesh-enabled agent can delegate tasks to any other agent directly, without going through the orchestrator. |
+
+The orchestrator chooses which agent to delegate to based on:
+1. **Responsibility** — what tasks the agent is designed to handle (checked first)
+2. **Persona** — the agent's expertise, skills, and personality (fallback)
 
 ## Security Model
 

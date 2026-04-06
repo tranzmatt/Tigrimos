@@ -1292,6 +1292,16 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+
+          {/* Task Auto-Cleanup */}
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+            <label style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, display: "block" }}>Task Auto-Cleanup</label>
+            <div className="form-group" style={{ maxWidth: 300 }}>
+              <label>Max Task Age (minutes)</label>
+              <input type="number" value={settings.staleTaskMaxAge ?? 0} onChange={(e) => setSettings({ ...settings, staleTaskMaxAge: Math.max(0, parseInt(e.target.value) || 0) })} min={0} step={10} />
+              <p className="hint">Auto-kill tasks running longer than this. Set to 0 to disable (default: 0 — no limit).</p>
+            </div>
+          </div>
         </section>
 
         <section className="card">

@@ -782,6 +782,7 @@ export default function ChatPage() {
         {!activeSession && messages.length === 0 ? (
           <div className="chat-empty">
             <h1>TigrimOS</h1>
+            <p style={{ fontSize: 12, opacity: 0.4, marginTop: -8, marginBottom: 8 }}>v1.1.0</p>
             <p>Start a conversation to get help with coding, run Python, manage files, and more.</p>
             <div className="chat-suggestions">
               {["Write a Python script to generate a PDF report", "Help me analyze a CSV file", "Build a React dashboard with charts", "Create a web scraper"].map((s) => (

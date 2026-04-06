@@ -29,7 +29,7 @@ runcmd:
 
   # Create Python virtual environment
   - python3 -m venv /opt/venv
-  - /opt/venv/bin/pip install --no-cache-dir numpy pillow matplotlib pandas scipy seaborn openpyxl python-docx
+  - /opt/venv/bin/pip install --no-cache-dir numpy pillow matplotlib pandas scipy seaborn openpyxl python-docx duckduckgo-search requests
 
   # Install clawhub CLI
   - npm i -g clawhub tsx

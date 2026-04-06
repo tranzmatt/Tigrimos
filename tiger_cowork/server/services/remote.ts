@@ -27,7 +27,7 @@ export async function remoteTask(
   }
 ): Promise<RemoteTaskResult> {
   const pollInterval = opts?.pollIntervalMs ?? 2000;
-  const idleTimeout = opts?.idleTimeoutMs ?? 60_000;
+  const idleTimeout = opts?.idleTimeoutMs ?? 120_000;
   const maxTimeout = opts?.maxTimeoutMs ?? opts?.timeoutMs ?? 1_800_000;
   const signal = opts?.signal;
   const baseUrl = instance.url.replace(/\/$/, "");

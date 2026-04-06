@@ -1941,7 +1941,7 @@ export async function spawnSubagent(
   const agentId = args.agentId || `subagent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const subagentId = agentId;
   const label = args.label || "subagent";
-  const timeout = (settings.subAgentTimeout || 120) * 1000; // default 120s
+  const timeout = (settings.subAgentTimeout || 300) * 1000; // default 5 minutes
 
   const run: SubagentRun = {
     id: subagentId,
@@ -2744,7 +2744,7 @@ async function realtimeAgentLoop(
           workingDir: _currentProjectWorkingFolder || settings.sandboxDir,
           systemPrompt: taskPrompt,
           signal,
-          timeout: (settings.subAgentTimeout || 120) * 1000,
+          timeout: (settings.subAgentTimeout || 300) * 1000,
           ...(isCodex ? {} : { maxTurns: settings.agentMaxToolRounds || 15 }),
           model: rtCliSubModel,
           onToolCall: (name: string, toolArgs: any) => {
@@ -3193,7 +3193,7 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
   if (args.wait) {
     try {
       const settings = await getSettings();
-      const timeout = (args as any).timeout || (settings.subAgentTimeout || 120);
+      const timeout = (args as any).timeout || (settings.subAgentTimeout || 300);
       const resultMsg = await busWaitForMessage(sessionId, `result:${args.to}`, timeout * 1000, signal);
       return {
         ok: true,
@@ -3253,7 +3253,7 @@ async function realtimeWaitResult(args: { from: string; timeout?: number }, sign
   // Otherwise wait for the bus message
   try {
     const settings = await getSettings();
-    const timeout = (args.timeout || settings.subAgentTimeout || 120) * 1000;
+    const timeout = (args.timeout || settings.subAgentTimeout || 300) * 1000;
     const resultMsg = await busWaitForMessage(sessionId, `result:${args.from}`, timeout, signal);
     return {
       ok: true,

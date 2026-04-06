@@ -77,9 +77,17 @@ struct SetupView: View {
 
     private var welcomeStep: some View {
         VStack(spacing: 20) {
-            Image(systemName: "pawprint.fill")
-                .font(.system(size: 72))
-                .foregroundColor(.orange)
+            if let iconImage = NSImage(named: "AppIcon") {
+                Image(nsImage: iconImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 96, height: 96)
+            } else {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 96, height: 96)
+            }
 
             Text("Welcome to TigrimOS")
                 .font(.largeTitle.bold())
