@@ -45,6 +45,7 @@ export default function SettingsPage() {
   const [_oauthStatus, _setOauthStatus] = useState<{ message: string; success: boolean } | null>(null); // reserved for future use
   const yamlUploadRef = useRef<HTMLInputElement>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [showSoulIdentity, setShowSoulIdentity] = useState(false);
 
   // Cloudflare Tunnel
   const [tunnelStatus, setTunnelStatus] = useState<"stopped" | "starting" | "installing" | "running" | "error">("stopped");
@@ -406,6 +407,53 @@ export default function SettingsPage() {
               </span>
             )}
           </div>
+        </section>
+
+        <section className="card">
+          <h3
+            style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}
+            onClick={() => setShowSoulIdentity(!showSoulIdentity)}
+          >
+            <span style={{ transition: "transform 0.2s", transform: showSoulIdentity ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block" }}>&#9654;</span>
+            Soul &amp; Identity
+            <span style={{ fontSize: 12, fontWeight: 400, color: "#888", marginLeft: 4 }}>
+              {settings.soulMd || settings.identityMd ? "(configured)" : "(not set)"}
+            </span>
+          </h3>
+          {showSoulIdentity && (
+            <div>
+              <p className="hint" style={{ marginBottom: 12 }}>
+                These are injected into the orchestrator's system prompt when answering humans.
+                <strong> SOUL.md</strong> defines internal cognition, values, and behavior (~3,000 chars).
+                <strong> IDENTITY.md</strong> defines external presentation — name, avatar, tone (~200 chars).
+                Leave empty to use the default TigrimOS personality.
+              </p>
+              <div className="form-group">
+                <label>SOUL.md — Internal cognition, values, behavior</label>
+                <textarea
+                  rows={10}
+                  style={{ fontFamily: "monospace", fontSize: 13 }}
+                  placeholder={`Example:\nYou are a thoughtful senior engineer who values clarity over cleverness.\nYou always explain trade-offs before recommending a solution.\nYou prefer simple, maintainable code over elegant abstractions.`}
+                  value={settings.soulMd || ""}
+                  onChange={(e) => setSettings({ ...settings, soulMd: e.target.value })}
+                  maxLength={5000}
+                />
+                <p className="hint">{(settings.soulMd || "").length} / 3,000 recommended chars</p>
+              </div>
+              <div className="form-group">
+                <label>IDENTITY.md — External presentation, name, avatar</label>
+                <textarea
+                  rows={4}
+                  style={{ fontFamily: "monospace", fontSize: 13 }}
+                  placeholder={`Example:\nName: Tiger\nTone: Friendly and direct\nAvatar: A confident tiger wearing glasses`}
+                  value={settings.identityMd || ""}
+                  onChange={(e) => setSettings({ ...settings, identityMd: e.target.value })}
+                  maxLength={1000}
+                />
+                <p className="hint">{(settings.identityMd || "").length} / 200 recommended chars</p>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="card">

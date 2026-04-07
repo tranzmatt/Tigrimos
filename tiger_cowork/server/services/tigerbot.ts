@@ -12,6 +12,27 @@ interface ChatMessage {
 }
 
 /**
+ * Strip model chain-of-thought / thinking blocks from response content.
+ * Many models leak internal reasoning like "The user is asking..." or "I should respond..."
+ * when given persona instructions. This filter removes those blocks.
+ */
+export function stripThinkingFromContent(content: string): string {
+  if (!content) return content;
+  // Pattern: lines that start with reasoning phrases (common CoT leakage patterns)
+  const thinkingPatterns = [
+    /^(?:The user (?:is asking|sent|wants|said|asked|seems|appears|has|just)|I (?:should|need to|will|must|can|cannot|don't|am |have |was )|OK,? (?:that|let|so|now)|Looking (?:at|back)|This (?:seems|is a|looks)|Now I (?:can|should|need|will)|Let me (?:think|analyze|check|respond|clarify))[^\n]*$/gm,
+  ];
+
+  let cleaned = content;
+  for (const pattern of thinkingPatterns) {
+    cleaned = cleaned.replace(pattern, "");
+  }
+  // Remove leading blank lines left after stripping
+  cleaned = cleaned.replace(/^\s*\n+/, "");
+  return cleaned;
+}
+
+/**
  * Estimate the total character size of a messages array.
  */
 export function estimateMessagesChars(messages: Array<{ content: any; tool_calls?: any[]; [k: string]: any }>): number {

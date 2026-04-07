@@ -502,6 +502,9 @@ export default function ChatPage() {
           // Force output panel refresh so new files (images, PDFs) render immediately
           setOutputRefreshKey((k) => k + 1);
         });
+        // Clear streaming AND pending buffer to prevent stale flush from restoring old content
+        streamBufferRef.current = "";
+        if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         setStreaming("");
         // Remove completed task from running set (will be refreshed by polling)
         setRunningTaskIds((prev) => {
