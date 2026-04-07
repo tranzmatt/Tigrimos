@@ -297,7 +297,6 @@ export default function ChatPage() {
   const [outputPanelOpen, setOutputPanelOpen] = useState(true);
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [activeTaskSessions, setActiveTaskSessions] = useState<Set<string>>(new Set());
-  const [outputRefreshKey, setOutputRefreshKey] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -500,7 +499,6 @@ export default function ChatPage() {
         api.getSession(activeSession).then((session: any) => {
           setMessages(session.messages || []);
           // Force output panel refresh so new files (images, PDFs) render immediately
-          setOutputRefreshKey((k) => k + 1);
         });
         // Clear streaming AND pending buffer to prevent stale flush from restoring old content
         streamBufferRef.current = "";
@@ -595,7 +593,6 @@ export default function ChatPage() {
         if (data.sessionId === activeSession && activeSession) {
           api.getSession(activeSession).then((session: any) => {
             setMessages(session.messages || []);
-            setOutputRefreshKey((k) => k + 1); // force output panel re-render
             setOutputPanelOpen(true); // auto-open output panel if files exist
           });
           setStatus("Job complete");
@@ -923,8 +920,8 @@ export default function ChatPage() {
             </button>
           </div>
           <div className="output-panel-content">
-            {allOutputFiles.map((group, gi) => (
-              <OutputCanvas key={`${gi}-${outputRefreshKey}`} files={group.files} />
+            {allOutputFiles.map((group) => (
+              <OutputCanvas key={group.files.join(",")} files={group.files} />
             ))}
           </div>
         </div>
