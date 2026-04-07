@@ -67,7 +67,7 @@ $welcomeXaml = @"
                 <TextBlock Text="&#x1F42F;" FontSize="56" HorizontalAlignment="Center" Margin="0,0,0,8"/>
                 <TextBlock Text="TigrimOS" FontSize="26" FontWeight="Bold" Foreground="White"
                            HorizontalAlignment="Center" Margin="0,0,0,2"/>
-                <TextBlock Text="v1.0.0 - Windows Installer" FontSize="13" Foreground="#80FFFFFF"
+                <TextBlock Text="v1.1.1 - Windows Installer" FontSize="13" Foreground="#80FFFFFF"
                            HorizontalAlignment="Center" Margin="0,0,0,24"/>
 
                 <!-- Description -->
