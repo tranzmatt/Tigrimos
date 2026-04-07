@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.1.1 (2026-04-08)
+**Soul & Identity, Chat Fixes**
+
+- **Soul & Identity persona system** — new collapsible section in Settings to define SOUL.md (internal cognition, values, behavior ~3,000 chars) and IDENTITY.md (external presentation, name, tone ~200 chars). Both are injected into the orchestrator's system prompt when answering humans. Leave empty for default personality.
+- **Thinking filter** — server-side paragraph-level filter strips model chain-of-thought leakage (e.g. "The user is asking...", "I should respond...") when soul/identity persona is active
+- **Fix duplicate chat responses** — removed redundant `chat:chunk` that sent the full response content alongside `chat:response`, causing the same message to appear twice
+- **Fix output panel reload** — React visualizations and iframes no longer remount on every chat response; uses stable file-list key instead of incrementing counter
+- **Fix conversational nudge** — simple chat replies without tool calls no longer get incorrectly nudged to "keep working", which caused extra reasoning text and duplicate responses
+- **Fix stream buffer leak** — cleared pending stream buffer and flush timer on response to prevent stale streaming content from reappearing
+
+## v1.1.0 (2026-04-06)
+**Remote Agent Swarm**
+
+- **Cross-machine remote agents** — TigrimOS instances can delegate tasks to each other over the network; fully peer-to-peer (any machine can be orchestrator or worker)
+- **Persona & Responsibility matching** — orchestrator auto-selects the right remote agent based on expertise and task match
+- **Live remote progress** — remote agent activity appears in the Minecraft Task Monitor with speech bubbles
+- **Configurable remote timeouts** — poll interval, idle timeout, and max timeout in Settings
+- **Swarm communication protocols** — TCP (private 1-on-1), Bus (broadcast), Blackboard (P2P auction), Mesh (any-to-any)
+- **Three agent modes** — Spawn Agent (one-shot YAML), Live Session (persistent with protocol tools), Direct Remote (AI picks instance)
+- **AgentEditor** — shows persona/responsibility fields for remote agents
+- **New tiger logo app icon**
+- Added `duckduckgo-search` and `requests` to VM provisioning
+- Sub-agent timeout default: 120s → 300s
+- Remote idle timeout default: 60s → 120s
+- Stale task cleanup now configurable and disabled by default
+
+## v1.0.0 (2026-04-03)
+**First Desktop Release**
+
+- **macOS native app** — TigrimOS.app (Apple Silicon) and TigrimOS_i.app (Intel) via Apple Virtualization.framework
+- **Windows installer** — TigrimOSInstaller.bat with WSL2-based Ubuntu sandbox
+- **Secure Ubuntu sandbox** — host files invisible by default, opt-in shared folders
+- **Minecraft Task Monitor** — live pixel-art agents with speech bubbles and walking animations
+- **16 built-in tools** — web search, Python, React, shell, files, skills, sub-agents
+- **Skill marketplace (ClawHub)** — install and manage AI skills
+- **MCP integration** — connect any Model Context Protocol server
+
 ## v0.4.3 (2026-04-02)
 **P2P Swarm Governance**
 
