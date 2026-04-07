@@ -2,7 +2,7 @@
   <img src="tiger_cowork/picture/banner_tigrimos.png" alt="TigrimOS Banner" width="100%">
 </p>
 
-# TigrimOS v1.1.0
+# TigrimOS v1.1.1
 
 A self-hosted AI workspace with chat, code execution, parallel multi-agent orchestration, **cross-machine remote agents**, and a skill marketplace. Runs on **macOS** and **Windows**. Everything executes inside a **secure Ubuntu sandbox** — no Docker required.
 
@@ -362,7 +362,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 │  │  ┌──────────────────────────────────────┐  │  │
 │  │  │        Ubuntu 22.04 VM               │  │  │
 │  │  │                                      │  │  │
-│  │  │   TigrimOS v1.1.0                   │  │  │
+│  │  │   TigrimOS v1.1.1│  │  │
 │  │  │   ├── Fastify server :3001          │  │  │
 │  │  │   ├── Node.js 20                    │  │  │
 │  │  │   ├── Python 3 + numpy/pandas/...   │  │  │
@@ -392,7 +392,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 │  │  ┌──────────────────────────────────────┐  │  │
 │  │  │     Ubuntu 22.04 "TigrimOS" distro  │  │  │
 │  │  │                                      │  │  │
-│  │  │   TigrimOS v1.1.0                   │  │  │
+│  │  │   TigrimOS v1.1.1│  │  │
 │  │  │   ├── Fastify server :3001          │  │  │
 │  │  │   ├── Node.js 20                    │  │  │
 │  │  │   ├── Python 3 + numpy/pandas/...   │  │  │
