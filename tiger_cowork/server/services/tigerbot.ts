@@ -15,21 +15,42 @@ interface ChatMessage {
  * Strip model chain-of-thought / thinking blocks from response content.
  * Many models leak internal reasoning like "The user is asking..." or "I should respond..."
  * when given persona instructions. This filter removes those blocks.
+ *
+ * Strategy: split by double-newline into paragraphs. Any paragraph that is purely
+ * reasoning (matches CoT patterns) is removed. The actual response is preserved.
  */
 export function stripThinkingFromContent(content: string): string {
   if (!content) return content;
-  // Pattern: lines that start with reasoning phrases (common CoT leakage patterns)
-  const thinkingPatterns = [
-    /^(?:The user (?:is asking|sent|wants|said|asked|seems|appears|has|just)|I (?:should|need to|will|must|can|cannot|don't|am |have |was )|OK,? (?:that|let|so|now)|Looking (?:at|back)|This (?:seems|is a|looks)|Now I (?:can|should|need|will)|Let me (?:think|analyze|check|respond|clarify))[^\n]*$/gm,
+
+  // Patterns that indicate a paragraph is internal reasoning (case-insensitive)
+  const thinkingStarters = [
+    /^the user\b/i,
+    /^I (?:should|need to|will|must|can|cannot|don't|am going|have to|was|think|notice)/i,
+    /^OK[,.]? (?:that|let|so|now|I)/i,
+    /^Looking (?:at|back)/i,
+    /^This (?:seems|is a|looks like)/i,
+    /^Now I (?:can|should|need|will)/i,
+    /^Let me (?:think|analyze|check|respond|clarify|consider)/i,
+    /^According to my (?:SOUL|IDENTITY|persona)/i,
+    /^Based on my (?:SOUL|IDENTITY|persona|instructions)/i,
+    /^My (?:SOUL|IDENTITY|persona) (?:says|tells|instructs|defines)/i,
+    /^Since (?:the user|they|this|I)/i,
+    /^(?:First|Here),? I (?:should|need|will|must)/i,
   ];
 
-  let cleaned = content;
-  for (const pattern of thinkingPatterns) {
-    cleaned = cleaned.replace(pattern, "");
-  }
-  // Remove leading blank lines left after stripping
-  cleaned = cleaned.replace(/^\s*\n+/, "");
-  return cleaned;
+  // Split into paragraphs (separated by blank lines)
+  const paragraphs = content.split(/\n\s*\n/);
+  const filtered = paragraphs.filter((para) => {
+    const trimmed = para.trim();
+    if (!trimmed) return false;
+    // Check if this paragraph starts with a thinking pattern
+    return !thinkingStarters.some((re) => re.test(trimmed));
+  });
+
+  // If everything was filtered out, return original to avoid empty response
+  if (filtered.length === 0) return content;
+
+  return filtered.join("\n\n").trim();
 }
 
 /**
