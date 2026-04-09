@@ -713,9 +713,13 @@ export default function ChatPage() {
     const fetchLog = () => {
       api.getActivityLog(activeSession).then((res: any) => {
         if (!cancelled && res.content) {
+          // Only auto-scroll if user is already near the bottom
+          const el = activityLogRef.current;
+          const wasAtBottom = el ? (el.scrollHeight - el.scrollTop - el.clientHeight < 40) : true;
           setActivityLogContent(res.content);
-          // Auto-scroll activity log to bottom
-          setTimeout(() => activityLogRef.current?.scrollTo(0, activityLogRef.current.scrollHeight), 50);
+          if (wasAtBottom) {
+            setTimeout(() => el?.scrollTo(0, el.scrollHeight), 50);
+          }
         }
       }).catch(() => {});
     };
