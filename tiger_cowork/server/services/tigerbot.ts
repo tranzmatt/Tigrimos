@@ -848,12 +848,13 @@ async function getApiConfig() {
   // Anthropic uses /v1/messages endpoint, not /chat/completions
   const isAnthropic = provider === "anthropic_claude_code" || rawUrl.includes("api.anthropic.com");
   const isLocal = provider === "ollama_local" || provider === "lmstudio_local" || provider === "openai_local" || rawUrl.includes("host.local");
+  const isKimi = rawUrl.includes("api.kimi.com") || rawUrl.includes("kimi.moonshot");
   const apiUrl = isAnthropic
     ? rawUrl.replace(/\/$/, "").replace(/\/messages$/, "") + "/messages"
     : rawUrl.endsWith("/chat/completions") ? rawUrl : rawUrl.replace(/\/$/, "") + "/chat/completions";
   // OAuth tokens (sk-ant-oat01-) use Bearer auth; API keys (sk-ant-api) use x-api-key
   const isOAuthToken = isAnthropic && apiKey?.startsWith("sk-ant-oat01-");
-  return { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal };
+  return { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal, isKimi };
 }
 
 // Single LLM call (no tool loop)
@@ -1060,7 +1061,7 @@ function fromAnthropicResponse(data: any): any {
 }
 
 async function llmCall(messages: ChatMessage[], options: { tools?: any[]; model?: string; signal?: AbortSignal } = {}): Promise<any> {
-  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal } = await getApiConfig();
+  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal, isKimi } = await getApiConfig();
   if (!apiKey && !isLocal) throw new Error("API key not configured");
 
   const sanitized = sanitizeMessages(messages);
@@ -1116,6 +1117,11 @@ async function llmCall(messages: ChatMessage[], options: { tools?: any[]; model?
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (apiKey && !isLocal) headers["Authorization"] = `Bearer ${apiKey}`;
     else if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    // Kimi coding API requires specific client headers
+    if (isKimi) {
+      headers["User-Agent"] = "claude-code/1.0";
+      headers["X-Client-Name"] = "claude-code";
+    }
     response = await fetch(apiUrl, {
       method: "POST",
       headers,
@@ -1488,11 +1494,16 @@ export async function callTigerBotWithTools(
       }
       return tc;
     }) : undefined;
-    allMessages.push({
+    const assistantMsg: any = {
       role: "assistant",
       content: message.content || "",
       tool_calls: truncatedToolCalls,
-    });
+    };
+    // Kimi requires reasoning_content in assistant messages when thinking is enabled
+    if (message.reasoning_content !== undefined) {
+      assistantMsg.reasoning_content = message.reasoning_content;
+    }
+    allMessages.push(assistantMsg);
 
     // If no tool calls, check if the LLM is giving up after errors — nudge it to retry
     if (!toolCalls.length) {
@@ -1902,11 +1913,15 @@ Scoring guide:
           const message = choice.message;
           const retryToolCalls = message.tool_calls || [];
 
-          allMessages.push({
+          const retryAssistantMsg: any = {
             role: "assistant",
             content: message.content || "",
             tool_calls: retryToolCalls.length ? retryToolCalls : undefined,
-          });
+          };
+          if (message.reasoning_content !== undefined) {
+            retryAssistantMsg.reasoning_content = message.reasoning_content;
+          }
+          allMessages.push(retryAssistantMsg);
 
           if (!retryToolCalls.length) break; // LLM done
 
@@ -1982,11 +1997,15 @@ Scoring guide:
         }
 
         const nudgeMsg = nudgeChoice.message;
-        allMessages.push({
+        const nudgeAssistantMsg: any = {
           role: "assistant",
           content: nudgeMsg.content || "",
           tool_calls: nudgeMsg.tool_calls,
-        });
+        };
+        if (nudgeMsg.reasoning_content !== undefined) {
+          nudgeAssistantMsg.reasoning_content = nudgeMsg.reasoning_content;
+        }
+        allMessages.push(nudgeAssistantMsg);
 
         let nudgeHasOutput = false;
         for (const tc of nudgeMsg.tool_calls) {
@@ -2134,7 +2153,7 @@ export async function streamTigerBot(
   onChunk: (text: string) => void,
   onDone: () => void
 ): Promise<void> {
-  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal } = await getApiConfig();
+  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal, isKimi } = await getApiConfig();
   const settings = await getSettings();
 
   if (!apiKey && !isLocal) {
@@ -2171,6 +2190,10 @@ export async function streamTigerBot(
     } else {
       const oaiHeaders: Record<string, string> = { "Content-Type": "application/json" };
       if (apiKey) oaiHeaders["Authorization"] = `Bearer ${apiKey}`;
+      if (isKimi) {
+        oaiHeaders["User-Agent"] = "TigrimOS/1.0";
+        oaiHeaders["X-Client-Name"] = "TigrimOS";
+      }
       response = await fetch(apiUrl, {
         method: "POST",
         headers: oaiHeaders,

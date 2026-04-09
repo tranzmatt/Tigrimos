@@ -1,5 +1,7 @@
 # Distribution
 *.dmg
+*.zip
+install/
 
 # macOS
 .DS_Store

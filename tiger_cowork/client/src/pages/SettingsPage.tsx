@@ -254,6 +254,7 @@ export default function SettingsPage() {
                     openrouter: { url: "https://openrouter.ai/api/v1", model: "x-ai/grok-4.20-beta" },
                     zai: { url: "https://api.z.ai/api/coding/paas/v4", model: "GLM-5.1" },
                     anthropic_claude_code: { url: "https://api.anthropic.com/v1", model: "claude-sonnet-4-20250514" },
+                    kimi: { url: "https://api.kimi.com/coding/v1", model: "kimi-k2.5" },
                     minimax: { url: "https://api.minimax.io/v1", model: "MiniMax-M2.7" },
                     google_ai_studio: { url: "https://generativelanguage.googleapis.com/v1beta/openai/", model: "gemini-3-flash-preview" },
                     ollama_local: { url: "http://host.local:11434/v1", model: "llama3.2" },
@@ -274,6 +275,7 @@ export default function SettingsPage() {
                 <option value="openrouter">OpenRouter</option>
                 <option value="zai">zAi</option>
                 <option value="anthropic_claude_code">Anthropic (Claude)</option>
+                <option value="kimi">Kimi (Moonshot)</option>
                 <option value="minimax">MiniMax</option>
                 <option value="google_ai_studio">Google AI Studio</option>
                 <option value="ollama_local">Ollama (Local macOS)</option>
@@ -285,7 +287,7 @@ export default function SettingsPage() {
               </select>
               <button className="btn btn-secondary" style={{ whiteSpace: "nowrap" }} onClick={() => setShowAddProvider(true)}>+ Add</button>
               {/* Show remove button only for custom providers */}
-              {!(["openrouter", "zai", "anthropic_claude_code", "minimax", "google_ai_studio", "ollama_local", "lmstudio_local", "openai_local"].includes(settings.aiProvider || "openrouter")) && (
+              {!(["openrouter", "zai", "anthropic_claude_code", "kimi", "minimax", "google_ai_studio", "ollama_local", "lmstudio_local", "openai_local"].includes(settings.aiProvider || "openrouter")) && (
                 <button className="btn btn-danger" style={{ whiteSpace: "nowrap" }} onClick={() => {
                   if (!confirm(`Remove provider "${(settings.customProviders || []).find((p: any) => p.id === settings.aiProvider)?.name || settings.aiProvider}"?`)) return;
                   const customProviders = (settings.customProviders || []).filter((p: any) => p.id !== settings.aiProvider);

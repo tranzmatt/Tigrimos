@@ -160,13 +160,19 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       } else {
         const rawUrl = apiUrl || "https://api.tigerbot.com/bot-chat/openai/v1/chat/completions";
         const url = rawUrl.endsWith("/chat/completions") ? rawUrl : rawUrl.replace(/\/$/, "") + "/chat/completions";
+        const isKimi = rawUrl.includes("api.kimi.com") || rawUrl.includes("kimi.moonshot");
+        const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
+        if (isKimi) {
+          headers["User-Agent"] = "claude-code/1.0";
+          headers["X-Client-Name"] = "claude-code";
+        }
         const response = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          headers,
           body: JSON.stringify({
             model: model || "TigerBot-70B-Chat",
             messages: [{ role: "user", content: "Hello" }],
-            max_tokens: 10,
+            max_tokens: 200,
           }),
         });
         if (response.ok) {
