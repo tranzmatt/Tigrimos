@@ -1572,7 +1572,7 @@ export async function callTigerBotWithTools(
     // Loop detection: same tools with same args called 3 rounds in a row → stop
     // Use tool names + truncated args hash to distinguish explore vs chart vs fix
     // Skip loop detection for agent coordination tools — send_task/wait_result naturally repeat
-    const agentCoordTools = new Set(["send_task", "wait_result", "check_agents", "spawn_subagent", "select_swarm"]);
+    const agentCoordTools = new Set(["send_task", "wait_result", "check_agents", "spawn_subagent", "select_swarm", "create_architecture"]);
     const isAgentCoordTool = (name: string) => agentCoordTools.has(name) || name.startsWith("spawn_");
     const hasNonAgentTool = toolCalls.some((tc: any) => !isAgentCoordTool(tc.function?.name || ""));
     const currentSignature = toolCalls.map((tc: any) => {

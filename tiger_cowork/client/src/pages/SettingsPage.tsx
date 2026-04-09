@@ -599,7 +599,8 @@ export default function SettingsPage() {
                   value={settings.subAgentMode || "auto"}
                   onChange={(e) => setSettings({ ...settings, subAgentMode: e.target.value })}
                 >
-                  <option value="auto">Auto (AI decides)</option>
+                  <option value="auto">Auto Spawn</option>
+                  <option value="auto_create">Auto (AI create architecture)</option>
                   <option value="manual">Spawn Agent (YAML config file)</option>
                   <option value="realtime">Realtime Agent (YAML config file)</option>
                   <option value="auto_swarm">Auto Choose Swarm (AI picks config)</option>
@@ -611,6 +612,8 @@ export default function SettingsPage() {
                     ? "Agents are defined by a YAML configuration file you provide"
                     : settings.subAgentMode === "auto_swarm"
                     ? "The AI analyzes your task and selects the best agent swarm from your saved YAML configurations"
+                    : settings.subAgentMode === "auto_create"
+                    ? "The AI creates a custom agent architecture tailored to your task, saves it as YAML, and runs it in realtime mode"
                     : "The AI automatically spawns and manages sub-agents as needed"}
                 </p>
               </div>

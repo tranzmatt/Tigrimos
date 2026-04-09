@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { callTigerBotWithTools, callTigerBot, trimConversationContext, compressOlderMessages, estimateMessagesChars, stripThinkingFromContent } from "./tigerbot";
 import { getChatHistory, saveChatHistory, ChatSession, getSettings, getProjects, getSkills } from "./data";
 import { runPython } from "./python";
-import { setSubagentStatusCallback, setCallContext, clearCallContext, loadAgentConfig, getManualAgentConfigSummary, startRealtimeSession, shutdownRealtimeSession, getRealtimeSession, getToolsForRealtimeOrchestrator, getHumanConnectedAgents, humanSendToAgent, humanBroadcastToAgents, humanWaitForAgent, collectPendingResults, getWorkingAgents, clearAutoSwarmSelection, getAutoSwarmSelection } from "./toolbox";
+import { setSubagentStatusCallback, setCallContext, clearCallContext, loadAgentConfig, getManualAgentConfigSummary, startRealtimeSession, shutdownRealtimeSession, getRealtimeSession, getToolsForRealtimeOrchestrator, getHumanConnectedAgents, humanSendToAgent, humanBroadcastToAgents, humanWaitForAgent, collectPendingResults, getWorkingAgents, clearAutoSwarmSelection, getAutoSwarmSelection, getAutoCreatedArchitecture, clearAutoCreatedArchitecture, callTool } from "./toolbox";
 import { busSubscribe, busPublish, busWaitForMessage } from "./protocols";
 import path from "path";
 import { execSync } from "child_process";
@@ -182,10 +182,19 @@ async function buildSystemPrompt(filterSkillIds?: string[], sessionId?: string):
   const isManualSubAgent = settings.subAgentEnabled && settings.subAgentMode === "manual";
   const isRealtimeAgent = settings.subAgentEnabled && settings.subAgentMode === "realtime";
   const isAutoSwarm = settings.subAgentEnabled && settings.subAgentMode === "auto_swarm";
+  const isAutoCreate = settings.subAgentEnabled && settings.subAgentMode === "auto_create";
 
   // Mode-specific delegation rules
   let delegationRules = "";
-  if (isRealtimeAgent) {
+  if (isAutoCreate) {
+    delegationRules = `
+AUTO CREATE ARCHITECTURE MODE: You are the orchestrator. Your workflow is:
+1. FIRST: Call create_architecture to design and build an agent team tailored to the user's task. Analyze what the task needs and choose the best architecture type and agents.
+2. AFTER CREATION: The created agents will boot in REALTIME mode. Use send_task({to: "<agentId>", task: "..."}) to delegate work, then wait_result({from: "<agentId>"}) to collect results.
+3. Do NOT do any work yourself — delegate everything to agents via send_task/wait_result.
+4. After all agents return, synthesize their results into a clear final response.
+5. If the task changes significantly, you may call create_architecture again to build a new team.`;
+  } else if (isRealtimeAgent) {
     delegationRules = `
 REALTIME AGENT MODE: All agents are already alive. Delegate ALL work to the agent team via send_task/wait_result.
 - If an orchestrator exists, send tasks ONLY to the orchestrator — it manages all sub-delegation.
@@ -804,18 +813,61 @@ img.save('${tmpOut}', 'JPEG', quality=80)
         // Set call context for sub-agent spawning (per-task, supports parallel execution)
         setCallContext(taskId, sessionId, 0);
 
-        // Boot realtime agents if in realtime mode or auto_swarm with a selected config
+        // Boot realtime agents if in realtime mode, auto_swarm with selection, or auto_create with creation
         const rtSettings = await getSettings();
         let realtimeTools: any[] | undefined;
         const autoSwarmConfigFile = rtSettings.subAgentMode === "auto_swarm"
           ? getAutoSwarmSelection(sessionId)
           : undefined;
+        let autoCreateConfigFile = rtSettings.subAgentMode === "auto_create"
+          ? getAutoCreatedArchitecture(sessionId)
+          : undefined;
+
+        // ─── Force create architecture if auto_create mode and no architecture yet ───
+        if (rtSettings.subAgentEnabled && rtSettings.subAgentMode === "auto_create" && !autoCreateConfigFile) {
+          activeTask.status = "Creating architecture...";
+          activeTask.lastUpdate = new Date().toISOString();
+          broadcastStatus({ sessionId, status: "tool_call", tool: "create_architecture", args: { description: message } });
+          socket.emit("chat:chunk", { sessionId, content: `> 🧠 **Creating Architecture** for your task...\n\n` });
+          appendSessionProgress(sessionId, `\n> 🧠 **Creating Architecture** for: ${message.slice(0, 100)}\n`);
+
+          try {
+            const archResult = await callTool("create_architecture", {
+              description: message,
+              architectureType: "hierarchical",
+              agentCount: "auto",
+            }, abortController.signal, taskId);
+
+            if (archResult?.ok) {
+              autoCreateConfigFile = archResult.filename;
+              activeTask.status = `Architecture "${archResult.systemName}" created (${archResult.mode})`;
+              activeTask.lastUpdate = new Date().toISOString();
+              const createdChunk = `> ✅ **${archResult.systemName}** created as \`${archResult.filename}\` — ${archResult.mode} mode, ${archResult.agents?.length || 0} agents\n\n`;
+              socket.emit("chat:chunk", { sessionId, content: createdChunk });
+              appendSessionProgress(sessionId, createdChunk);
+              socket.emit("chat:architecture-created", { sessionId, filename: archResult.filename, systemName: archResult.systemName });
+            } else {
+              const errChunk = `> ⚠️ Failed to create architecture: ${archResult?.error || "unknown error"}. Falling back to direct response.\n\n`;
+              socket.emit("chat:chunk", { sessionId, content: errChunk });
+              appendSessionProgress(sessionId, errChunk);
+            }
+          } catch (err: any) {
+            const errChunk = `> ⚠️ Architecture creation failed: ${err.message}. Falling back to direct response.\n\n`;
+            socket.emit("chat:chunk", { sessionId, content: errChunk });
+            appendSessionProgress(sessionId, errChunk);
+          }
+        }
+
         const realtimeConfigFile = rtSettings.subAgentMode === "realtime"
           ? rtSettings.subAgentConfigFile
-          : autoSwarmConfigFile;
+          : (autoSwarmConfigFile || autoCreateConfigFile);
 
         if (rtSettings.subAgentEnabled && realtimeConfigFile) {
-          const rtSession = await startRealtimeSession(sessionId, realtimeConfigFile, abortController.signal);
+          // Check if realtime session already booted (create_architecture boots it)
+          let rtSession = getRealtimeSession(sessionId) || null;
+          if (!rtSession) {
+            rtSession = await startRealtimeSession(sessionId, realtimeConfigFile, abortController.signal);
+          }
           if (rtSession) {
             realtimeTools = await getToolsForRealtimeOrchestrator();
             // Notify client that realtime agents are alive
@@ -938,6 +990,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               appendSessionProgress(sessionId, `> **${name === "send_task" ? "📤" : "⏳"} ${name}** → ${targetId}\n`);
             } else if (name === "select_swarm") {
               appendSessionProgress(sessionId, `\n> 🏗️ **Auto Swarm** selecting: \`${args.filename || "unknown"}\`${args.reason ? ` — ${args.reason}` : ""}\n`);
+            } else if (name === "create_architecture") {
+              appendSessionProgress(sessionId, `\n> 🧠 **Creating Architecture** for: ${(args.description || "").slice(0, 100)}${args.architectureType ? ` [${args.architectureType}]` : ""}\n`);
             } else {
               appendSessionProgress(sessionId, `> ⚙️ \`${name}\`\n`);
             }
@@ -950,6 +1004,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               activeTask.status = `Running: check_agents`;
             } else if (name === "select_swarm") {
               activeTask.status = `Running: select_swarm — choosing ${args.filename || "architecture"}`;
+            } else if (name === "create_architecture") {
+              activeTask.status = `Creating architecture...`;
             } else {
               activeTask.status = `Running: ${name}`;
             }
@@ -969,6 +1025,11 @@ img.save('${tmpOut}', 'JPEG', quality=80)
             } else if (name === "select_swarm" && toolResult?.ok) {
               activeTask.status = `Swarm "${toolResult.systemName}" active (${toolResult.mode})`;
               appendSessionProgress(sessionId, `\n> ✅ **${toolResult.systemName || toolResult.selected}** — ${toolResult.mode} mode, ${toolResult.agents?.length || 0} agents\n`);
+            } else if (name === "create_architecture" && toolResult?.ok) {
+              activeTask.status = `Architecture "${toolResult.systemName}" created (${toolResult.mode})`;
+              appendSessionProgress(sessionId, `\n> ✅ **${toolResult.systemName}** created as \`${toolResult.filename}\` — ${toolResult.mode} mode, ${toolResult.agents?.length || 0} agents\n`);
+              // Emit event so client can show "View Architecture" button
+              socket.emit("chat:architecture-created", { sessionId, filename: toolResult.filename, systemName: toolResult.systemName });
             } else {
               activeTask.status = `${name} done, thinking...`;
             }
@@ -1529,18 +1590,60 @@ img.save('${tmpOut}', 'JPEG', quality=80)
         // Set call context for sub-agent spawning — pass project working folder so output goes there
         setCallContext(taskId, sessionId, 0, undefined, resolvedWorkingFolder || undefined);
 
-        // Boot realtime agents if in realtime mode or auto_swarm with a selected config
+        // Boot realtime agents if in realtime mode, auto_swarm with selection, or auto_create with creation
         const rtSettings = await getSettings();
         let realtimeTools: any[] | undefined;
         const autoSwarmConfigFile = rtSettings.subAgentMode === "auto_swarm"
           ? getAutoSwarmSelection(sessionId)
           : undefined;
+        let autoCreateConfigFile = rtSettings.subAgentMode === "auto_create"
+          ? getAutoCreatedArchitecture(sessionId)
+          : undefined;
+
+        // ─── Force create architecture if auto_create mode and no architecture yet ───
+        if (rtSettings.subAgentEnabled && rtSettings.subAgentMode === "auto_create" && !autoCreateConfigFile) {
+          activeTask.status = "Creating architecture...";
+          activeTask.lastUpdate = new Date().toISOString();
+          broadcastStatus({ sessionId, status: "tool_call", tool: "create_architecture", args: { description: message } });
+          socket.emit("chat:chunk", { sessionId, content: `> 🧠 **Creating Architecture** for your task...\n\n` });
+          appendSessionProgress(sessionId, `\n> 🧠 **Creating Architecture** for: ${message.slice(0, 100)}\n`);
+
+          try {
+            const archResult = await callTool("create_architecture", {
+              description: message,
+              architectureType: "hierarchical",
+              agentCount: "auto",
+            }, abortController.signal, taskId);
+
+            if (archResult?.ok) {
+              autoCreateConfigFile = archResult.filename;
+              activeTask.status = `Architecture "${archResult.systemName}" created (${archResult.mode})`;
+              activeTask.lastUpdate = new Date().toISOString();
+              const createdChunk = `> ✅ **${archResult.systemName}** created as \`${archResult.filename}\` — ${archResult.mode} mode, ${archResult.agents?.length || 0} agents\n\n`;
+              socket.emit("chat:chunk", { sessionId, content: createdChunk });
+              appendSessionProgress(sessionId, createdChunk);
+              socket.emit("chat:architecture-created", { sessionId, filename: archResult.filename, systemName: archResult.systemName });
+            } else {
+              const errChunk = `> ⚠️ Failed to create architecture: ${archResult?.error || "unknown error"}. Falling back to direct response.\n\n`;
+              socket.emit("chat:chunk", { sessionId, content: errChunk });
+              appendSessionProgress(sessionId, errChunk);
+            }
+          } catch (err: any) {
+            const errChunk = `> ⚠️ Architecture creation failed: ${err.message}. Falling back to direct response.\n\n`;
+            socket.emit("chat:chunk", { sessionId, content: errChunk });
+            appendSessionProgress(sessionId, errChunk);
+          }
+        }
+
         const realtimeConfigFile = rtSettings.subAgentMode === "realtime"
           ? rtSettings.subAgentConfigFile
-          : autoSwarmConfigFile;
+          : (autoSwarmConfigFile || autoCreateConfigFile);
 
         if (rtSettings.subAgentEnabled && realtimeConfigFile) {
-          const rtSession = await startRealtimeSession(sessionId, realtimeConfigFile, abortController.signal);
+          let rtSession = getRealtimeSession(sessionId) || null;
+          if (!rtSession) {
+            rtSession = await startRealtimeSession(sessionId, realtimeConfigFile, abortController.signal);
+          }
           if (rtSession) {
             realtimeTools = await getToolsForRealtimeOrchestrator();
             const agentNames = Array.from(rtSession.agents.values()).map(h => `${h.agentDef.name} (${h.agentDef.id})`);
@@ -1648,6 +1751,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               appendSessionProgress(sessionId, `> **${name === "send_task" ? "📤" : "⏳"} ${name}** → ${targetId}\n`);
             } else if (name === "select_swarm") {
               appendSessionProgress(sessionId, `\n> 🏗️ **Auto Swarm** selecting: \`${args.filename || "unknown"}\`${args.reason ? ` — ${args.reason}` : ""}\n`);
+            } else if (name === "create_architecture") {
+              appendSessionProgress(sessionId, `\n> 🧠 **Creating Architecture** for: ${(args.description || "").slice(0, 100)}${args.architectureType ? ` [${args.architectureType}]` : ""}\n`);
             } else {
               appendSessionProgress(sessionId, `> ⚙️ \`${name}\`\n`);
             }
@@ -1660,6 +1765,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               activeTask.status = `Running: check_agents`;
             } else if (name === "select_swarm") {
               activeTask.status = `Running: select_swarm — choosing ${args.filename || "architecture"}`;
+            } else if (name === "create_architecture") {
+              activeTask.status = `Creating architecture...`;
             } else {
               activeTask.status = `Running: ${name}`;
             }
@@ -1678,6 +1785,10 @@ img.save('${tmpOut}', 'JPEG', quality=80)
             } else if (name === "select_swarm" && toolResult?.ok) {
               activeTask.status = `Swarm "${toolResult.systemName}" active (${toolResult.mode})`;
               appendSessionProgress(sessionId, `\n> ✅ **${toolResult.systemName || toolResult.selected}** — ${toolResult.mode} mode, ${toolResult.agents?.length || 0} agents\n`);
+            } else if (name === "create_architecture" && toolResult?.ok) {
+              activeTask.status = `Architecture "${toolResult.systemName}" created (${toolResult.mode})`;
+              appendSessionProgress(sessionId, `\n> ✅ **${toolResult.systemName}** created as \`${toolResult.filename}\` — ${toolResult.mode} mode, ${toolResult.agents?.length || 0} agents\n`);
+              socket.emit("chat:architecture-created", { sessionId, filename: toolResult.filename, systemName: toolResult.systemName });
             } else {
               activeTask.status = `${name} done, thinking...`;
             }

@@ -67,7 +67,7 @@ export interface Settings {
   webSearchEngine?: string;
   pythonPath?: string;
   subAgentEnabled?: boolean;
-  subAgentMode?: string; // "auto" | "manual" | "realtime"
+  subAgentMode?: string; // "auto" | "auto_create" | "manual" | "realtime" | "auto_swarm"
   subAgentModel?: string;
   subAgentMaxDepth?: number;
   subAgentMaxConcurrent?: number;

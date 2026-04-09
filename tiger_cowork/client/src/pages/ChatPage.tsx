@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo, lazy, Suspense } from "react";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,6 +8,8 @@ import { useSocket } from "../hooks/useSocket";
 import { Icon } from "../components/Layout";
 import ReactComponentRenderer from "../components/ReactComponentRenderer";
 import "./ChatPage.css";
+
+const AgentEditor = lazy(() => import("../components/AgentEditor"));
 
 interface AttachedFile {
   name: string;
@@ -371,10 +373,14 @@ export default function ChatPage() {
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [activityLogContent, setActivityLogContent] = useState("");
   const activityLogRef = useRef<HTMLDivElement>(null);
+  const [autoCreatedArch, setAutoCreatedArch] = useState<{ filename: string; systemName: string } | null>(null);
+  const [showAgentEditor, setShowAgentEditor] = useState(false);
+  const [agentEditorYaml, setAgentEditorYaml] = useState<string | undefined>();
+  const [agentEditorFilename, setAgentEditorFilename] = useState<string | undefined>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { connected, sendMessage, onChunk, onResponse, onStatus } = useSocket();
+  const { connected, sendMessage, onChunk, onResponse, onStatus, socket: socketRef } = useSocket();
 
   // ─── Throttled streaming: batch chunks to avoid re-rendering on every tiny chunk ───
   const streamBufferRef = useRef("");
@@ -706,6 +712,19 @@ export default function ChatPage() {
     return () => { unsub1(); unsub2(); unsub3(); };
   }, [activeSession, onChunk, onResponse, onStatus]);
 
+  // ─── Listen for auto-created architecture events ───
+  useEffect(() => {
+    const sock = socketRef.current;
+    if (!sock) return;
+    const handler = (data: { sessionId: string; filename: string; systemName: string }) => {
+      if (data.sessionId === activeSession) {
+        setAutoCreatedArch({ filename: data.filename, systemName: data.systemName });
+      }
+    };
+    sock.on("chat:architecture-created", handler);
+    return () => { sock.off("chat:architecture-created", handler); };
+  }, [activeSession, socketRef]);
+
   // ─── Activity log polling: fetch log file when panel is open ───
   useEffect(() => {
     if (!showActivityLog || !activeSession) { setActivityLogContent(""); return; }
@@ -923,6 +942,26 @@ export default function ChatPage() {
             </svg>
             <span>Activity</span>
           </button>
+          {autoCreatedArch && (
+            <button
+              className="activity-log-toggle active"
+              onClick={async () => {
+                try {
+                  const data = await api.getAgentConfig(autoCreatedArch.filename);
+                  setAgentEditorYaml(data.content);
+                  setAgentEditorFilename(autoCreatedArch.filename);
+                  setShowAgentEditor(true);
+                } catch {}
+              }}
+              title={`View auto-created architecture: ${autoCreatedArch.systemName}`}
+              style={{ borderColor: "#8b5cf6", color: "#8b5cf6", background: "rgba(139, 92, 246, 0.15)" }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-7.07-2.93 2.83-2.83m8.48-8.48 2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83"/>
+              </svg>
+              <span>{autoCreatedArch.systemName}</span>
+            </button>
+          )}
         </div>
         {!activeSession && messages.length === 0 ? (
           <div className="chat-empty">
@@ -1059,6 +1098,23 @@ export default function ChatPage() {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
           <span className="output-toggle-badge">{allOutputFiles.reduce((n, g) => n + g.files.length, 0)}</span>
         </button>
+      )}
+
+      {/* Agent Editor modal for viewing auto-created architectures */}
+      {showAgentEditor && (
+        <Suspense fallback={<div style={{ padding: 40, textAlign: "center" }}>Loading editor...</div>}>
+          <AgentEditor
+            onClose={() => { setShowAgentEditor(false); setAgentEditorYaml(undefined); setAgentEditorFilename(undefined); }}
+            onSave={(filename, content) => {
+              api.saveAgentConfig(filename, content);
+              setShowAgentEditor(false);
+              setAgentEditorYaml(undefined);
+              setAgentEditorFilename(undefined);
+            }}
+            initialYaml={agentEditorYaml}
+            initialFilename={agentEditorFilename}
+          />
+        </Suspense>
       )}
     </div>
   );

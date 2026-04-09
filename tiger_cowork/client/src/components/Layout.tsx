@@ -100,7 +100,8 @@ export default function Layout({ children }: { children: ReactNode }) {
           <img src="/tigrimos-logo.png" alt="TigrimOS Swarm Agents" className="header-logo-img" />
           <span className="logo-badge">AI</span>
           {swarmEnabled && agentMode === "realtime" && <span className="logo-realtime-tag">Realtime Agent</span>}
-          {swarmEnabled && agentMode !== "realtime" && <span className="logo-swarm-tag">Swarm</span>}
+          {swarmEnabled && agentMode === "auto_create" && <span className="logo-realtime-tag">Auto Architecture</span>}
+          {swarmEnabled && agentMode !== "realtime" && agentMode !== "auto_create" && <span className="logo-swarm-tag">Swarm</span>}
           {swarmEnabled && agentGroupName && (
             <div className="agent-group-selector">
               <span

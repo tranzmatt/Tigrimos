@@ -299,6 +299,20 @@ Agent Editor YAML:                      Agent Editor YAML:
 - Configure timeouts in **Settings → Remote Agent Timeouts**
 - Remote agent progress appears live in the **Minecraft Task Monitor** with speech bubbles
 
+### Agent Architecture Modes
+
+TigrimOS offers five ways to organize your AI agents. Choose a mode in **Settings → Sub-Agent Mode**:
+
+| Mode | Description |
+|------|-------------|
+| **Auto Spawn** | The AI freely spawns sub-agents as needed — no configuration required. Best for simple tasks where you don't need a specific team structure. |
+| **Auto (AI create architecture)** | The AI analyzes your prompt, designs a custom multi-agent architecture (YAML), saves it, and boots all agents in **realtime mode** — fully automatic. A "View Architecture" button appears in chat so you can inspect, edit, and save the generated YAML for reuse. |
+| **Spawn Agent (YAML config)** | You provide a YAML file defining your agent team. The orchestrator spawns agents one-at-a-time by `agentId`. Each agent runs a single LLM call and returns a result. |
+| **Realtime Agent (YAML config)** | All agents defined in your YAML boot at session start and stay alive. Tasks are delegated via `send_task`/`wait_result` for true parallel execution with inter-agent communication (TCP, Bus, Mesh, Blackboard). |
+| **Auto Choose Swarm (AI picks config)** | The AI reviews all your saved YAML architectures and selects the best one for the current task. After selection, agents boot in realtime mode. |
+
+> **Tip:** Use **Auto (AI create architecture)** when you want the AI to build the right team for you. The generated YAML is saved to `data/agents/` — click the purple button in chat to open it in the Agent Editor where you can refine and save it for future use.
+
 ### Three Ways to Use Remote Agents
 
 | Mode | Tool | How |

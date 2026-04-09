@@ -518,6 +518,39 @@ export function getProtocolToolsForAgent(agentDef?: AgentConfig | null, connecti
   return tools;
 }
 
+// --- Auto Create Architecture: create_architecture tool ---
+const createArchitectureTool = {
+  type: "function" as const,
+  function: {
+    name: "create_architecture",
+    description: "Analyze the user's task and create an appropriate multi-agent architecture to handle it. This generates a YAML agent configuration, saves it, and boots all agents in realtime mode. Call this FIRST before doing any work. Choose the best architecture type for the task.",
+    parameters: {
+      type: "object",
+      properties: {
+        description: { type: "string", description: "Description of the task/goal that the agent team needs to accomplish" },
+        architectureType: {
+          type: "string",
+          enum: ["hierarchical", "flat", "mesh", "hybrid", "pipeline", "p2p"],
+          description: "Architecture type: hierarchical (orchestrator delegates), flat (direct control), mesh (free collaboration), hybrid (orchestrator + mesh workers), pipeline (sequential chain), p2p (peer swarm with blackboard)",
+        },
+        agentCount: { type: "string", description: "Number of agents to create, or 'auto' to let AI decide" },
+      },
+      required: ["description"],
+    },
+  },
+};
+
+// Track auto-created architecture filename per session
+const autoCreatedArchitectures = new Map<string, string>(); // sessionId → filename
+
+export function getAutoCreatedArchitecture(sessionId: string): string | undefined {
+  return autoCreatedArchitectures.get(sessionId);
+}
+
+export function clearAutoCreatedArchitecture(sessionId: string) {
+  autoCreatedArchitectures.delete(sessionId);
+}
+
 // --- Auto Choose Swarm: select_swarm tool ---
 const selectSwarmTool = {
   type: "function" as const,
@@ -588,6 +621,18 @@ export async function getTools(opts?: { excludeSubagent?: boolean; sessionId?: s
     if (settings.subAgentMode === "realtime") {
       // Realtime mode: use send_task/wait_result instead of spawn_subagent
       tools.push(sendTaskTool, waitResultTool, checkAgentsTool);
+    } else if (settings.subAgentMode === "auto_create") {
+      // Check if architecture has already been created for this session
+      const createdFile = opts?.sessionId ? getAutoCreatedArchitecture(opts.sessionId) : undefined;
+      if (createdFile) {
+        // Architecture created and agents are running — provide realtime coordination tools
+        tools.push(sendTaskTool, waitResultTool, checkAgentsTool);
+        tools.push(createArchitectureTool); // keep for recreating if needed
+      } else {
+        // No architecture yet — return ONLY create_architecture (no builtins)
+        // so the LLM is forced to create the architecture first
+        return [createArchitectureTool, ...getMcpTools()];
+      }
     } else if (settings.subAgentMode === "auto_swarm") {
       // Check if a swarm has already been selected for this session
       const selectedFile = opts?.sessionId ? getAutoSwarmSelection(opts.sessionId) : undefined;
@@ -669,6 +714,24 @@ export async function getManualAgentConfigSummary(sessionId?: string): Promise<s
   const settings = await getSettings();
   // Realtime mode has its own summary
   if (settings.subAgentMode === "realtime") return await getRealtimeAgentConfigSummary();
+  // Auto create mode: show created architecture summary if already created
+  if (settings.subAgentMode === "auto_create") {
+    const createdFile = sessionId ? getAutoCreatedArchitecture(sessionId) : undefined;
+    if (createdFile) {
+      const config = loadAgentConfig(createdFile);
+      if (config) {
+        const mode = config.system?.orchestration_mode || "hierarchical";
+        let summary = `\n\nAUTO-CREATED ARCHITECTURE (${config.system?.name || createdFile}, mode: ${mode}, REALTIME):\n`;
+        summary += `Agents are LIVE. Use send_task/wait_result to delegate work. Do NOT do work yourself.\n\n`;
+        for (const a of (config.agents || []).filter((ag: AgentConfig) => ag.role !== "human")) {
+          summary += `- ${a.id} ("${a.name}", ${a.role}): ${a.persona || ""}\n`;
+        }
+        summary += `\nCall create_architecture again to generate a different architecture.\n`;
+        return summary;
+      }
+    }
+    return null; // No architecture yet — AI will call create_architecture
+  }
   // Auto swarm mode: show available configs for selection (or realtime summary if already selected)
   if (settings.subAgentMode === "auto_swarm") {
     const selectedFile = sessionId ? getAutoSwarmSelection(sessionId) : undefined;
@@ -3660,6 +3723,135 @@ export async function callTool(name: string, args: any, signal?: AbortSignal, ta
     case "clawhub_search": return clawhubSearchTool(args);
     case "clawhub_install": return clawhubInstallTool(args);
     case "spawn_subagent": return spawnSubagent(args, _currentParentSessionId, _currentSubagentDepth);
+
+    case "create_architecture": {
+      const { description, architectureType, agentCount } = args;
+      if (!description) return { ok: false, error: "description is required" };
+      const archType = architectureType || "hierarchical";
+      const count = agentCount || "auto";
+      const sessionId = _currentParentSessionId || taskId || "default";
+
+      // Use LLM to generate architecture (same prompt as /agents/generate-system)
+      const caller = await getSubagentCaller();
+      const genResult = await caller(
+        [{ role: "user", content: `Based on this description, generate a complete multi-agent system configuration as a JSON object.
+
+User Request: ${description}
+
+Architecture Type: ${archType}
+Number of Agents: ${count === "auto" ? "Determine the optimal number based on the task" : count}
+
+Return ONLY a valid JSON object (no markdown, no code fences) with this exact structure:
+{
+  "system": {
+    "name": "System Name",
+    "orchestration_mode": "${archType}",
+    "communication_protocol": "structured_handoff",
+    "context_passing": "full_chain"
+  },
+  "agents": [
+    {
+      "id": "unique_snake_case_id",
+      "name": "Agent Display Name",
+      "role": "one of: human, orchestrator, worker, checker, reporter, researcher, peer",
+      "persona": "Detailed 2-3 sentence persona description",
+      "responsibilities": ["responsibility 1", "responsibility 2", "responsibility 3"],
+      "bus": { "enabled": true/false, "topics": ["topic1", "topic2"] },
+      "mesh": { "enabled": true/false }
+    }
+  ],
+  "connections": [
+    {
+      "from": "source_agent_id",
+      "to": "target_agent_id",
+      "label": "connection_label",
+      "protocol": "one of: tcp, queue",
+      "topics": ["topic1"]
+    }
+  ]
+}
+
+IMPORTANT RULES:
+- Always include exactly ONE agent with role "human" and id "human" as the entry point
+- For hierarchical: human connects to orchestrator, orchestrator connects to all workers
+- For flat: human connects to all agents directly
+- For mesh: do NOT generate connections — mesh mode bypasses access control
+- For hybrid: human → orchestrator via tcp, workers have mesh.enabled: true
+- For pipeline: agents form a sequential chain
+- For p2p: ALL non-human agents use role "peer", no connections, use blackboard
+- Each non-human agent must have a meaningful persona and 3-5 responsibilities
+- Agent IDs must be snake_case
+- Connections use ONLY "tcp" or "queue" protocol
+- Every non-human agent MUST have at least one incoming connection
+- Generate between 3-8 agents (including human) unless user specifies otherwise` }],
+        "You are an expert multi-agent system architect. Generate complete, well-structured agent system configurations as JSON. Return ONLY valid JSON, nothing else. Do not use any tools.",
+        undefined, undefined, undefined, [], // no tools
+      );
+
+      if (!genResult.content) return { ok: false, error: "No response from LLM" };
+      let jsonStr = genResult.content.trim();
+      const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+      if (jsonMatch) jsonStr = jsonMatch[0];
+      let parsed: any;
+      try { parsed = JSON.parse(jsonStr); } catch {
+        return { ok: false, error: "Failed to parse generated architecture" };
+      }
+      if (!parsed.system || !parsed.agents || !Array.isArray(parsed.agents)) {
+        return { ok: false, error: "Generated architecture has invalid structure" };
+      }
+
+      // Convert to YAML and save
+      const yamlContent = yaml.dump(parsed, { indent: 2, lineWidth: 120, noRefs: true, sortKeys: false });
+      const safeName = (parsed.system.name || "auto_created")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+      const filename = `${safeName}_auto.yaml`;
+      const agentsDir = path.resolve("data/agents");
+      if (!fs.existsSync(agentsDir)) fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, filename), yamlContent, "utf8");
+
+      // Track creation for this session
+      autoCreatedArchitectures.set(sessionId, filename);
+      // Also set as swarm selection so realtime boot picks it up
+      setAutoSwarmSelection(sessionId, filename);
+
+      // Shutdown any existing realtime session
+      const existingSession = getRealtimeSession(sessionId);
+      if (existingSession) shutdownRealtimeSession(sessionId);
+
+      // Boot realtime session
+      const rtSession = await startRealtimeSession(sessionId, filename, signal);
+      if (!rtSession) {
+        return { ok: false, error: `Architecture created as "${filename}" but failed to boot realtime session` };
+      }
+
+      const allAgents = (parsed.agents || []).filter((a: any) => a.role !== "human");
+      const agentList = allAgents.map((a: any) => ({
+        id: a.id, name: a.name, role: a.role,
+        persona: a.persona || "", responsibilities: a.responsibilities || [],
+      }));
+      const mode = parsed.system.orchestration_mode || archType;
+      const orchestrator = parsed.agents.find((a: any) => a.role === "orchestrator");
+
+      let delegationInstructions: string;
+      if (orchestrator) {
+        delegationInstructions = `Orchestrator "${orchestrator.id}" manages the team. Use send_task({to: "${orchestrator.id}", task: "..."}) then wait_result({from: "${orchestrator.id}"}).`;
+      } else {
+        const workerIds = allAgents.map((a: any) => a.id);
+        delegationInstructions = `Send tasks directly to agents using send_task/wait_result. Available agents: ${workerIds.join(", ")}.`;
+      }
+
+      return {
+        ok: true,
+        created: true,
+        filename,
+        systemName: parsed.system.name || filename,
+        mode,
+        agents: agentList,
+        realtimeMode: true,
+        yamlContent,
+        message: `Architecture "${parsed.system.name || filename}" created and saved as "${filename}" (${mode}). All agents are now LIVE. ${delegationInstructions} Do NOT do any work yourself — delegate everything via send_task/wait_result.`,
+      };
+    }
 
     case "select_swarm": {
       const { filename, reason } = args;
