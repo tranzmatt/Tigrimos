@@ -1,5 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const DATA_DIR = path.resolve("data");
 
@@ -73,16 +74,36 @@ export interface Settings {
   subAgentMaxConcurrent?: number;
   subAgentTimeout?: number;
   subAgentConfigFile?: string;
+  // Auto Architecture (AI-decided) settings
+  autoArchitectureType?: string;   // "auto" | "hierarchical" | "flat" | "mesh" | "hybrid" | "pipeline" | "p2p"
+  autoAgentCount?: number | string; // number or "auto"
+  autoProtocols?: string[];         // multi-select protocol array
+  autoProtocol?: string;            // legacy single-protocol fallback
   remoteInstances?: Array<{ id: string; name: string; url: string; token: string; persona?: string; responsibility?: string }>;
   remotePollInterval?: number;   // seconds — how often to poll remote agent (default: 2)
   remoteIdleTimeout?: number;    // seconds — abort if no progress for this long (default: 60)
   remoteMaxTimeout?: number;     // seconds — hard cap regardless of activity (default: 1800)
+  remoteAgentConfig?: string;    // YAML config file for incoming remote tasks ("" = simple chat)
   staleTaskMaxAge?: number;      // minutes — auto-kill tasks older than this; 0 = disabled (default: 0)
   [key: string]: any;
 }
 
+// Per-call settings overrides using AsyncLocalStorage for proper async scoping.
+// When a project chat sets agent overrides, they're stored here and every
+// downstream getSettings() call picks them up automatically.
+const _settingsOverrideStore = new AsyncLocalStorage<Partial<Settings>>();
+
+export function runWithSettingsOverride<T>(overrides: Partial<Settings>, fn: () => T): T {
+  return _settingsOverrideStore.run(overrides, fn);
+}
+
 export async function getSettings(): Promise<Settings> {
-  return readJSON("settings.json");
+  const settings = (await readJSON("settings.json")) as Settings;
+  const overrides = _settingsOverrideStore.getStore();
+  if (overrides) {
+    return { ...settings, ...overrides };
+  }
+  return settings;
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
@@ -97,6 +118,15 @@ export interface Project {
   workingFolder: string;
   memory: string;
   skills: string[];
+  // Per-project agent overrides (if set, override system settings for this project's chats)
+  agentOverride?: {
+    enabled?: boolean;
+    subAgentMode?: string;
+    subAgentConfigFile?: string;
+    autoArchitectureType?: string;
+    autoAgentCount?: number | string;
+    autoProtocols?: string[];
+  };
   createdAt: string;
   updatedAt: string;
 }

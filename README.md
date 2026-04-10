@@ -2,11 +2,21 @@
   <img src="tiger_cowork/picture/banner_tigrimos.png" alt="TigrimOS Banner" width="100%">
 </p>
 
-# TigrimOS v1.2.0
+# TigrimOS v1.2.1
 
-A self-hosted AI workspace with chat, code execution, parallel multi-agent orchestration, **cross-machine remote agents**, **Auto (AI create architecture)**, and a skill marketplace. Runs on **macOS** and **Windows**. Everything executes inside a **secure Ubuntu sandbox** — no Docker required.
+A self-hosted AI workspace with chat, code execution, parallel multi-agent orchestration, **cross-machine remote agents**, **Auto (AI create architecture)**, **per-project agent overrides**, **full chat logs with agent reasoning**, and a skill marketplace. Runs on **macOS** and **Windows**. Everything executes inside a **secure Ubuntu sandbox** — no Docker required.
 
-AI-generated code and shell commands **cannot escape the sandbox** or touch your files without permission. Mix different AI providers in the same agent team — OpenAI-compatible APIs, Claude Code CLI, and Codex CLI. **Delegate tasks to remote TigrimOS instances** running on other machines — the orchestrator chooses the right agent based on persona and responsibility. **Auto mode** lets the AI analyze your prompt, design a custom multi-agent architecture (YAML), and boot all agents automatically — no manual configuration needed. Connect external MCP servers to extend the AI's toolbox. Built with 16 built-in tools and designed for long-running sessions with smart context compression and checkpoint recovery.
+AI-generated code and shell commands **cannot escape the sandbox** or touch your files without permission. Mix different AI providers in the same agent team — OpenAI-compatible APIs, Claude Code CLI, and Codex CLI. **Delegate tasks to remote TigrimOS instances** running on other machines — the orchestrator chooses the right agent based on persona and responsibility. **Auto mode** lets the AI analyze your prompt, design a custom multi-agent architecture (YAML), and boot all agents automatically — no manual configuration needed. Each project can now **override the global agent mode** with its own sub-agent configuration, and every chat session records a **complete log** of user messages, tool calls, and sub-agent reasoning. Connect external MCP servers to extend the AI's toolbox. Built with 16 built-in tools and designed for long-running sessions with smart context compression and checkpoint recovery.
+
+## What's New in v1.2.1
+
+- **Per-Project Agent Mode Override** — each project can override the global sub-agent mode (Auto Spawn, Auto Create, Manual, Realtime, Auto Swarm) and pick its own YAML config, architecture type, agent count, and connection protocols. The active override is shown as a clickable purple tag in the project header and chat banner.
+- **Auto Architecture — AI-Decided Settings** — new "Auto (AI decides)" option for architecture type and agent count (3–8 default). Connection protocols are now multi-select toggle buttons instead of a single dropdown.
+- **Full Chat Log with Agent Reasoning** — every chat session records a complete log file capturing user messages, tool calls (with arguments), sub-agent reasoning text, and final responses. New **Log** button next to Activity opens a live-updating panel, and a new **Export** button downloads the log as `.txt`.
+- **Finished Tasks History** — the Tasks page now shows the last 100 completed/cancelled/errored tasks with status, duration, agents used, and tools called. An **Open Chat** button on each finished task jumps directly to that session (and for project tasks, into the correct project chat).
+- **Project List Sorting** — sort projects by A–Z or Recent (most recently updated). Sort preference persists across reloads.
+- **Sub-Agent Reasoning in Chat Log** — orchestrators and worker agents stream their intermediate thinking text to the chat log between tool calls, giving full visibility into the decision-making chain.
+- **AsyncLocalStorage Settings Override** — project agent overrides now propagate correctly through every async call in the backend, ensuring `getSettings()` returns the project-scoped configuration throughout the entire chat lifecycle.
 
 > **Security first:** Everything runs inside a real Ubuntu sandbox. Your host file system is completely invisible to the AI unless you explicitly share a folder.
 
@@ -32,14 +42,14 @@ AI-generated code and shell commands **cannot escape the sandbox** or touch your
 
 ## Downloads
 
-Download from the [latest release](https://github.com/Sompote/Tigrimos/releases/tag/v1.2.0):
+Download from the [latest release](https://github.com/Sompote/Tigrimos/releases/tag/v1.2.1):
 
 | Platform | Download | Sandbox Technology |
 |----------|----------|--------------------|
-| macOS — Apple Silicon (M1/M2/M3/M4) | [**TigrimOS-v1.2.0-macOS-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.0/TigrimOS-v1.2.0-macOS-AppleSilicon.zip) | Apple Virtualization.framework |
-| macOS — Apple Silicon (macOS 26 Tahoe) | [**TigrimOS-v1.2.0-macOS-Tahoe-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.0/TigrimOS-v1.2.0-macOS-Tahoe-AppleSilicon.zip) | Apple Virtualization.framework |
-| macOS — Intel | [**TigrimOS-v1.2.0-macOS-Intel.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.0/TigrimOS-v1.2.0-macOS-Intel.zip) | Apple Virtualization.framework |
-| Windows 10/11 | [**TigrimOS-v1.2.0-Windows.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.0/TigrimOS-v1.2.0-Windows.zip) | WSL2 (Windows Subsystem for Linux) |
+| macOS — Apple Silicon (M1/M2/M3/M4) | [**TigrimOS-v1.2.1-macOS-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.1/TigrimOS-v1.2.1-macOS-AppleSilicon.zip) | Apple Virtualization.framework |
+| macOS — Apple Silicon (macOS 26 Tahoe) | [**TigrimOS-v1.2.1-macOS-Tahoe-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.1/TigrimOS-v1.2.1-macOS-Tahoe-AppleSilicon.zip) | Apple Virtualization.framework |
+| macOS — Intel | [**TigrimOS-v1.2.1-macOS-Intel.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.1/TigrimOS-v1.2.1-macOS-Intel.zip) | Apple Virtualization.framework |
+| Windows 10/11 | [**TigrimOS-v1.2.1-Windows.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.2.1/TigrimOS-v1.2.1-Windows.zip) | WSL2 (Windows Subsystem for Linux) |
 
 ## Requirements
 
@@ -70,8 +80,8 @@ Download from the [latest release](https://github.com/Sompote/Tigrimos/releases/
    brew install qemu
    ```
 3. Download the release zip for your Mac:
-   - **Apple Silicon** (M1/M2/M3/M4): [TigrimOS-v1.2.0-macOS-AppleSilicon.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.2.0/TigrimOS-v1.2.0-macOS-AppleSilicon.zip)
-   - **Intel**: [TigrimOS-v1.2.0-macOS-Intel.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.2.0/TigrimOS-v1.2.0-macOS-Intel.zip)
+   - **Apple Silicon** (M1/M2/M3/M4): [TigrimOS-v1.2.1-macOS-AppleSilicon.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.2.1/TigrimOS-v1.2.1-macOS-AppleSilicon.zip)
+   - **Intel**: [TigrimOS-v1.2.1-macOS-Intel.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.2.1/TigrimOS-v1.2.1-macOS-Intel.zip)
 4. Unzip — you get `TigrimOS.app` (or `TigrimOS_i.app`) and `tiger_cowork/` folder
 5. Keep both in the **same directory** (the app needs `tiger_cowork/` next to it)
 6. Double-click the `.app` to launch
@@ -82,7 +92,7 @@ That's it. Subsequent launches start in under a minute.
 
 ### Windows — Installer
 
-1. Download and unzip [TigrimOS-v1.2.0-Windows.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.2.0/TigrimOS-v1.2.0-Windows.zip)
+1. Download and unzip [TigrimOS-v1.2.1-Windows.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.2.1/TigrimOS-v1.2.1-Windows.zip)
 2. Double-click **`TigrimOSInstaller.bat`**
 3. The graphical installer will guide you through:
    - Enabling WSL2 (may require a one-time restart)
@@ -260,7 +270,7 @@ You can mix them in a **multi-agent swarm** — for example, one agent using `cl
 
 > **Note:** All CLI tools run **inside the sandbox** — they cannot access your host system. API keys and credentials are isolated from your host environment.
 
-## Remote Agents (New in v1.2.0)
+## Remote Agents
 
 TigrimOS instances can delegate tasks to each other across machines. Any TigrimOS instance can be both an orchestrator and a remote worker — fully peer-to-peer.
 
@@ -401,7 +411,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 │  │  ┌──────────────────────────────────────┐  │  │
 │  │  │        Ubuntu 22.04 VM               │  │  │
 │  │  │                                      │  │  │
-│  │  │   TigrimOS v1.2.0│  │  │
+│  │  │   TigrimOS v1.2.1│  │  │
 │  │  │   ├── Fastify server :3001          │  │  │
 │  │  │   ├── Node.js 20                    │  │  │
 │  │  │   ├── Python 3 + numpy/pandas/...   │  │  │
@@ -431,7 +441,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 │  │  ┌──────────────────────────────────────┐  │  │
 │  │  │     Ubuntu 22.04 "TigrimOS" distro  │  │  │
 │  │  │                                      │  │  │
-│  │  │   TigrimOS v1.2.0│  │  │
+│  │  │   TigrimOS v1.2.1│  │  │
 │  │  │   ├── Fastify server :3001          │  │  │
 │  │  │   ├── Node.js 20                    │  │  │
 │  │  │   ├── Python 3 + numpy/pandas/...   │  │  │

@@ -1,13 +1,31 @@
 import { Server, Socket } from "socket.io";
 import { v4 as uuid } from "uuid";
 import { callTigerBotWithTools, callTigerBot, trimConversationContext, compressOlderMessages, estimateMessagesChars, stripThinkingFromContent } from "./tigerbot";
-import { getChatHistory, saveChatHistory, ChatSession, getSettings, getProjects, getSkills } from "./data";
+import { getChatHistory, saveChatHistory, ChatSession, getSettings, getProjects, getSkills, runWithSettingsOverride } from "./data";
 import { runPython } from "./python";
 import { setSubagentStatusCallback, setCallContext, clearCallContext, loadAgentConfig, getManualAgentConfigSummary, startRealtimeSession, shutdownRealtimeSession, getRealtimeSession, getToolsForRealtimeOrchestrator, getHumanConnectedAgents, humanSendToAgent, humanBroadcastToAgents, humanWaitForAgent, collectPendingResults, getWorkingAgents, clearAutoSwarmSelection, getAutoSwarmSelection, getAutoCreatedArchitecture, clearAutoCreatedArchitecture, callTool } from "./toolbox";
 import { busSubscribe, busPublish, busWaitForMessage } from "./protocols";
 import path from "path";
 import { execSync } from "child_process";
 import fs from "fs";
+
+// ─── Log directories (module-scoped so helpers work outside setupSocket) ───
+const ACTIVITY_LOG_DIR = path.resolve("data", "activity_logs");
+const CHAT_LOG_DIR = path.resolve("data", "chat_logs");
+try { if (!fs.existsSync(ACTIVITY_LOG_DIR)) fs.mkdirSync(ACTIVITY_LOG_DIR, { recursive: true }); } catch {}
+try { if (!fs.existsSync(CHAT_LOG_DIR)) fs.mkdirSync(CHAT_LOG_DIR, { recursive: true }); } catch {}
+
+function appendActivityLog(sessionId: string, text: string) {
+  try { fs.appendFileSync(path.join(ACTIVITY_LOG_DIR, `${sessionId}.log`), text); } catch {}
+}
+
+function appendChatLog(sessionId: string, text: string) {
+  try { fs.appendFileSync(path.join(CHAT_LOG_DIR, `${sessionId}.log`), text); } catch {}
+}
+
+function chatLogTimestamp(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
 
 // ─── Scan output_file/ for newly created files ───
 const OUTPUT_EXTS = [".pdf", ".docx", ".doc", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".svg", ".html", ".gif", ".webp", ".txt", ".md"];
@@ -54,6 +72,50 @@ const activeTasks = new Map<string, ActiveTask>();
 const sessionToTaskId = new Map<string, string>(); // sessionId → taskId for O(1) lookup
 const taskAbortControllers = new Map<string, AbortController>();
 
+// ─── Finished Tasks History (ring buffer, last 100) ───
+export interface FinishedTask {
+  id: string;
+  sessionId: string;
+  projectId?: string;
+  projectName?: string;
+  title: string;
+  status: "completed" | "cancelled" | "error";
+  toolCalls: string[];
+  agents: string[];
+  agentTools: Record<string, string[]>;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+}
+const finishedTasks: FinishedTask[] = [];
+const MAX_FINISHED = 100;
+
+function recordFinishedTask(task: ActiveTask, status: "completed" | "cancelled" | "error" = "completed") {
+  const finishedAt = new Date().toISOString();
+  const startedMs = new Date(task.startedAt).getTime();
+  const durationMs = Date.now() - startedMs;
+  const allAgents = new Set<string>([...task.activeAgents, ...task.doneAgents, ...Object.keys(task.agentTools || {})]);
+  finishedTasks.unshift({
+    id: task.id,
+    sessionId: task.sessionId,
+    projectId: task.projectId,
+    projectName: task.projectName,
+    title: task.title,
+    status,
+    toolCalls: [...task.toolCalls],
+    agents: Array.from(allAgents),
+    agentTools: { ...task.agentTools },
+    startedAt: task.startedAt,
+    finishedAt,
+    durationMs,
+  });
+  if (finishedTasks.length > MAX_FINISHED) finishedTasks.length = MAX_FINISHED;
+}
+
+export function getFinishedTasks(): FinishedTask[] {
+  return [...finishedTasks];
+}
+
 export function getActiveTasks(): (Omit<ActiveTask, 'activeAgents' | 'doneAgents'> & { activeAgents: string[]; doneAgents: string[] })[] {
   return Array.from(activeTasks.values()).map(t => {
     // Send only the last 50 tools per agent and last 200 toolCalls to keep payloads small
@@ -76,9 +138,12 @@ export function killActiveTask(taskId: string): boolean {
   const controller = taskAbortControllers.get(taskId);
   if (controller) {
     controller.abort();
-    // Immediately remove from active tasks so UI updates
+    // Record as cancelled and remove from active tasks so UI updates
     const task = activeTasks.get(taskId);
-    if (task) sessionToTaskId.delete(task.sessionId);
+    if (task) {
+      recordFinishedTask(task, "cancelled");
+      sessionToTaskId.delete(task.sessionId);
+    }
     activeTasks.delete(taskId);
     taskAbortControllers.delete(taskId);
     return true;
@@ -262,8 +327,52 @@ Output files:
 let ioRef: Server | null = null;
 
 // Broadcast status to ALL connected sockets (so reconnected clients get updates)
+// Also writes significant events to the per-session full chat log for later export.
 function broadcastStatus(data: Record<string, any>) {
-  if (ioRef) ioRef.emit("chat:status", data);
+  if (!ioRef) return;
+  // Full Chat Log: record tool calls, agent spawns/reasoning/results, etc.
+  if (data.sessionId && data.status) {
+    const sid = data.sessionId as string;
+    try {
+      if (data.status === "tool_call") {
+        const argsStr = data.args ? JSON.stringify(data.args, null, 2) : "";
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] TOOL_CALL: ${data.tool || "unknown"}${data.label ? ` (${data.label})` : ""}\n${argsStr ? argsStr + "\n" : ""}`);
+      } else if (data.status === "tool_result") {
+        appendChatLog(sid, `[${chatLogTimestamp()}] TOOL_RESULT: ${data.tool || "unknown"}\n`);
+      } else if (data.status === "subagent_spawn") {
+        const taskStr = data.task ? `\n  TASK: ${String(data.task).slice(0, 500)}` : "";
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] >>> AGENT_SPAWN: ${data.label || data.subagentId || "agent"}${taskStr}\n`);
+      } else if (data.status === "subagent_tool") {
+        appendChatLog(sid, `[${chatLogTimestamp()}]   ${data.label || "agent"} → tool: ${data.tool}\n`);
+      } else if (data.status === "subagent_done") {
+        const resultStr = data.result ? `\n${"-".repeat(50)}\nREASONING/RESPONSE:\n${data.result}\n${"-".repeat(50)}` : "";
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] <<< AGENT_DONE: ${data.label || data.subagentId || "agent"}${resultStr}\n`);
+      } else if (data.status === "subagent_error") {
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] !!! AGENT_ERROR: ${data.label || "agent"}: ${data.error || ""}\n`);
+      } else if (data.status === "realtime_agent_ready") {
+        appendChatLog(sid, `[${chatLogTimestamp()}] AGENT_READY: ${data.label || data.agentId || "agent"}\n`);
+      } else if (data.status === "realtime_agent_working") {
+        const taskStr = data.task ? `\n  TASK: ${String(data.task).slice(0, 500)}` : "";
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] >>> AGENT_WORKING: ${data.label || data.agentId || "agent"}${taskStr}\n`);
+      } else if (data.status === "realtime_agent_tool") {
+        if (data.tool && data.tool !== "error_recovery") {
+          appendChatLog(sid, `[${chatLogTimestamp()}]   ${data.label || "agent"} → tool: ${data.tool}\n`);
+        }
+      } else if (data.status === "realtime_agent_text" && data.text) {
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] ${data.label || "agent"} THINKING:\n${data.text}\n`);
+      } else if (data.status === "subagent_text" && data.text) {
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] ${data.label || "agent"} THINKING:\n${data.text}\n`);
+      } else if (data.status === "realtime_agent_done") {
+        const resultStr = data.result ? `\n${"-".repeat(50)}\nFINAL RESPONSE:\n${data.result}\n${"-".repeat(50)}` : "";
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] <<< AGENT_COMPLETE: ${data.label || data.agentId || "agent"}${resultStr}\n`);
+      } else if (data.status === "running" && data.content) {
+        appendChatLog(sid, `[${chatLogTimestamp()}]   ${data.label || "agent"}: ${String(data.content).slice(0, 500)}\n`);
+      } else if (data.status === "human_node_message" && data.content) {
+        appendChatLog(sid, `\n[${chatLogTimestamp()}] HUMAN_NODE_MESSAGE from ${data.label || data.agentId}:\n${data.content}\n`);
+      }
+    } catch {}
+  }
+  ioRef.emit("chat:status", data);
 }
 
 export function setupSocket(io: Server): void {
@@ -272,15 +381,8 @@ export function setupSocket(io: Server): void {
   // Track whether swarm tag was already shown per session
   const swarmTagShown = new Set<string>();
 
-  // ─── Activity log: append to a simple log file per session ───
-  const ACTIVITY_LOG_DIR = path.resolve("data", "activity_logs");
-  try { if (!fs.existsSync(ACTIVITY_LOG_DIR)) fs.mkdirSync(ACTIVITY_LOG_DIR, { recursive: true }); } catch {}
-
-  function appendSessionProgress(sessionId: string, text: string) {
-    try {
-      fs.appendFileSync(path.join(ACTIVITY_LOG_DIR, `${sessionId}.log`), text);
-    } catch {}
-  }
+  // Alias for module-scoped activity log helper (preserve legacy call sites)
+  const appendSessionProgress = appendActivityLog;
 
   function clearSessionProgress(sessionId: string) {
     // no-op — keep log files for history
@@ -518,6 +620,7 @@ export function setupSocket(io: Server): void {
             await saveChatHistory(sessions);
       session.updatedAt = new Date().toISOString();
       await saveChatHistory(sessions);
+      appendChatLog(sessionId, `\n[${chatLogTimestamp()}] USER:\n${message}\n`);
 
       // ─── /agent command: talk directly to agents in realtime mode ───
       // Format: /agent [agent_name_or_id] "prompt"  OR  /agent "prompt" (broadcast to all connected)
@@ -1096,6 +1199,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
           files: outputFiles.length > 0 ? outputFiles : undefined,
         });
         await saveChatHistory(sessions);
+        appendChatLog(sessionId, `\n[${chatLogTimestamp()}] ASSISTANT:\n${fullResponse}\n`);
         socket.emit("chat:response", { sessionId, content: fullResponse, done: true, files: outputFiles.length > 0 ? outputFiles : undefined });
         broadcastStatus({ sessionId, status: "job_complete", files: outputFiles.length > 0 ? outputFiles : undefined } as any);
       } catch (err: any) {
@@ -1189,6 +1293,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               clearTimeout(lateTimeout);
               // All agents finished — now broadcast done and clean up
               broadcastStatus({ sessionId, status: "done" });
+              const _ft = activeTasks.get(taskId);
+              if (_ft) recordFinishedTask(_ft, "completed");
               sessionToTaskId.delete(sessionId);
               activeTasks.delete(taskId);
               taskAbortControllers.delete(taskId);
@@ -1211,6 +1317,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
             // Unsubscribe all pending bus listeners to prevent leaks
             for (const u of lateUnsubs) u();
             broadcastStatus({ sessionId, status: "done" });
+            const _ftLate = activeTasks.get(taskId);
+            if (_ftLate) recordFinishedTask(_ftLate, "completed");
             sessionToTaskId.delete(sessionId);
             activeTasks.delete(taskId);
             taskAbortControllers.delete(taskId);
@@ -1257,6 +1365,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
         } else {
           // No agents still working — broadcast done and clean up immediately
           broadcastStatus({ sessionId, status: "done" });
+          const _ft2 = activeTasks.get(taskId);
+          if (_ft2) recordFinishedTask(_ft2, "completed");
           sessionToTaskId.delete(sessionId);
           activeTasks.delete(taskId);
           taskAbortControllers.delete(taskId);
@@ -1353,6 +1463,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
             await saveChatHistory(sessions);
       session.updatedAt = new Date().toISOString();
       await saveChatHistory(sessions);
+      appendChatLog(sessionId, `\n[${chatLogTimestamp()}] USER [project=${project.name}]:\n${message}\n`);
 
       // ─── /agent command in project chat ───
       const agentCmdMatchProj = message.match(/^\/agent\s+(?:(\S+)\s+)?[""]?([\s\S]+?)[""]?\s*$/i);
@@ -1490,8 +1601,22 @@ img.save('${tmpOut}', 'JPEG', quality=80)
         }
       }
 
+      // ─── Build per-project settings override (agentOverride) ───
+      const ao = (project as any).agentOverride;
+      const projectSettingsOverrides: any = {};
+      if (ao && ao.enabled) {
+        projectSettingsOverrides.subAgentEnabled = true;
+        if (ao.subAgentMode) projectSettingsOverrides.subAgentMode = ao.subAgentMode;
+        if (ao.subAgentConfigFile) projectSettingsOverrides.subAgentConfigFile = ao.subAgentConfigFile;
+        if (ao.autoArchitectureType) projectSettingsOverrides.autoArchitectureType = ao.autoArchitectureType;
+        if (ao.autoAgentCount) projectSettingsOverrides.autoAgentCount = ao.autoAgentCount;
+        if (ao.autoProtocols) projectSettingsOverrides.autoProtocols = ao.autoProtocols;
+      }
+      const hasProjectOverrides = Object.keys(projectSettingsOverrides).length > 0;
+
+      const runProjectChat = async () => {
       const settings = await getSettings();
-      let rawChatMessages2 = session.messages.map((m) => ({
+      let rawChatMessages2 = session!.messages.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
       }));
@@ -1850,6 +1975,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
           files: outputFiles.length > 0 ? outputFiles : undefined,
         });
         await saveChatHistory(sessions);
+        appendChatLog(sessionId, `\n[${chatLogTimestamp()}] ASSISTANT [project=${project.name}]:\n${fullResponse}\n`);
         socket.emit("chat:response", { sessionId, content: fullResponse, done: true, files: outputFiles.length > 0 ? outputFiles : undefined });
         broadcastStatus({ sessionId, status: "job_complete", files: outputFiles.length > 0 ? outputFiles : undefined } as any);
       } catch (err: any) {
@@ -1965,9 +2091,18 @@ img.save('${tmpOut}', 'JPEG', quality=80)
         }
         // Keep realtime session alive between messages for follow-up delegation
 
+        const _ftProj = activeTasks.get(taskId);
+        if (_ftProj) recordFinishedTask(_ftProj, "completed");
         sessionToTaskId.delete(sessionId);
         activeTasks.delete(taskId);
         taskAbortControllers.delete(taskId);
+      }
+      }; // end runProjectChat
+
+      if (hasProjectOverrides) {
+        await runWithSettingsOverride(projectSettingsOverrides, runProjectChat);
+      } else {
+        await runProjectChat();
       }
     });
 
@@ -2016,6 +2151,7 @@ setInterval(async () => {
       }
       clearAutoSwarmSelection(task.sessionId);
       sessionToTaskId.delete(task.sessionId);
+      recordFinishedTask(task, "cancelled");
       activeTasks.delete(taskId);
     }
   }

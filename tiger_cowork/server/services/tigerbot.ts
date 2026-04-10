@@ -823,6 +823,11 @@ interface TigerBotResponse {
 function sanitizeToolCallContent(content: string): string {
   if (!content) return content;
   let cleaned = content;
+  // Remove model thinking/reasoning blocks (e.g. <think>...</think>, <reasoning>...</reasoning>)
+  cleaned = cleaned.replace(/<think(?:ing)?>\s*[\s\S]*?<\/think(?:ing)?>\s*/gi, "");
+  cleaned = cleaned.replace(/<reasoning>\s*[\s\S]*?<\/reasoning>\s*/gi, "");
+  cleaned = cleaned.replace(/<reflection>\s*[\s\S]*?<\/reflection>\s*/gi, "");
+  cleaned = cleaned.replace(/<inner_monologue>\s*[\s\S]*?<\/inner_monologue>\s*/gi, "");
   // Remove [tool_name]({"param": "value", ...}) style markers (JSON args)
   cleaned = cleaned.replace(/\[(\w+)\]\s*\(\s*\{[^}]*\}\s*\)/g, "");
   // Remove [tool_name](<parameter name="...">...</parameter>) style markers (XML-like, single line)
@@ -1188,6 +1193,7 @@ export async function callTigerBotWithTools(
   sessionId?: string,
   onRetry?: (attempt: number, maxRetries: number, error: string) => void,
   taskId?: string,
+  onAgentText?: (text: string) => void,
 ): Promise<TigerBotResponse> {
   // --- Local CLI agent shortcut: delegate entirely to Claude Code or Codex CLI ---
   if (isLocalCliAgent(modelOverride)) {
@@ -1504,6 +1510,11 @@ export async function callTigerBotWithTools(
       assistantMsg.reasoning_content = message.reasoning_content;
     }
     allMessages.push(assistantMsg);
+
+    // Stream the agent's reasoning text to the chat log callback
+    if (onAgentText && message.content && typeof message.content === "string" && message.content.trim()) {
+      try { onAgentText(message.content); } catch {}
+    }
 
     // If no tool calls, check if the LLM is giving up after errors — nudge it to retry
     if (!toolCalls.length) {

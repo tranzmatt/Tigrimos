@@ -373,6 +373,9 @@ export default function ChatPage() {
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [activityLogContent, setActivityLogContent] = useState("");
   const activityLogRef = useRef<HTMLDivElement>(null);
+  const [showChatLog, setShowChatLog] = useState(false);
+  const [chatLogContent, setChatLogContent] = useState("");
+  const chatLogRef = useRef<HTMLDivElement>(null);
   const [autoCreatedArch, setAutoCreatedArch] = useState<{ filename: string; systemName: string } | null>(null);
   const [showAgentEditor, setShowAgentEditor] = useState(false);
   const [agentEditorYaml, setAgentEditorYaml] = useState<string | undefined>();
@@ -747,6 +750,41 @@ export default function ChatPage() {
     return () => { cancelled = true; clearInterval(iv); };
   }, [showActivityLog, activeSession, isLoading]);
 
+  // ─── Chat log polling ───
+  useEffect(() => {
+    if (!showChatLog || !activeSession) { setChatLogContent(""); return; }
+    let cancelled = false;
+    const fetchLog = () => {
+      api.getChatLog(activeSession).then((res: any) => {
+        if (!cancelled && res.content) {
+          const el = chatLogRef.current;
+          const wasAtBottom = el ? (el.scrollHeight - el.scrollTop - el.clientHeight < 40) : true;
+          setChatLogContent(res.content);
+          if (wasAtBottom) {
+            setTimeout(() => el?.scrollTo(0, el.scrollHeight), 50);
+          }
+        }
+      }).catch(() => {});
+    };
+    fetchLog();
+    const iv = setInterval(fetchLog, isLoading ? 2000 : 5000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [showChatLog, activeSession, isLoading]);
+
+  // ─── Sub-agent reasoning stream → append to chat log panel ───
+  useEffect(() => {
+    if (!showChatLog || !activeSession) return;
+    const unsub = onStatus((data: any) => {
+      if (data?.sessionId && data.sessionId !== activeSession) return;
+      if (data?.status !== "subagent_text" && data?.status !== "realtime_agent_text") return;
+      const text = typeof data?.text === "string" ? data.text : "";
+      if (!text) return;
+      const label = data?.label || data?.agent || "agent";
+      setChatLogContent((prev) => prev + `\n[${label} thinking] ${text}`);
+    });
+    return unsub;
+  }, [showChatLog, activeSession, onStatus]);
+
   // ─── Smart scroll: only auto-scroll if user is near the bottom ───
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
@@ -934,13 +972,49 @@ export default function ChatPage() {
           </button>
           <button
             className={`activity-log-toggle ${showActivityLog ? "active" : ""}`}
-            onClick={() => setShowActivityLog(v => !v)}
+            onClick={() => { setShowActivityLog(v => !v); setShowChatLog(false); }}
             title={showActivityLog ? "Hide activity log" : "Show activity log"}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
             </svg>
             <span>Activity</span>
+          </button>
+          <button
+            className={`activity-log-toggle ${showChatLog ? "active" : ""}`}
+            onClick={() => { setShowChatLog(v => !v); setShowActivityLog(false); }}
+            title={showChatLog ? "Hide chat log" : "Show chat log"}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            <span>Log</span>
+          </button>
+          <button
+            className="activity-log-toggle"
+            onClick={async () => {
+              if (!activeSession) return;
+              try {
+                const res: any = await api.getChatLog(activeSession);
+                if (!res.content) { alert("No log content yet for this session."); return; }
+                const blob = new Blob([res.content], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `chat-log-${activeSession}.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (err: any) {
+                alert("Failed to export log: " + (err?.message || "unknown error"));
+              }
+            }}
+            title="Export full chat log as .txt file"
+            disabled={!activeSession}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>Export</span>
           </button>
           {autoCreatedArch && (
             <button
@@ -990,6 +1064,33 @@ export default function ChatPage() {
                   ) : (
                     <div className="activity-log-empty">No activity yet. Run a task with agents to see logs here.</div>
                   )}
+                </div>
+              </div>
+            )}
+            {showChatLog && (
+              <div className="activity-log-panel">
+                <div className="activity-log-header">
+                  <span>Chat Log</span>
+                  {isLoading && <span className="activity-log-live">LIVE</span>}
+                  <button
+                    onClick={() => {
+                      if (!chatLogContent) return;
+                      const blob = new Blob([chatLogContent], { type: "text/plain" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `chat-log-${activeSession || "session"}.txt`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    style={{ marginLeft: "auto", padding: "2px 10px", fontSize: 11, borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.8)", cursor: "pointer" }}
+                    title="Save log as text file"
+                  >
+                    Save .txt
+                  </button>
+                </div>
+                <div className="activity-log-body" ref={chatLogRef} style={{ fontFamily: "monospace", fontSize: 11, whiteSpace: "pre-wrap" }}>
+                  {chatLogContent || "No chat log yet. Send a message to start recording."}
                 </div>
               </div>
             )}

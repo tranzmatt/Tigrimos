@@ -2403,6 +2403,21 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
         combinedSignal,
         subagentTools,
         agentModel,
+        undefined,  // sessionId
+        undefined,  // onRetry
+        undefined,  // taskId
+        (text: string) => {
+          // Stream sub-agent's reasoning text to chat log
+          if (subagentStatusCallback) {
+            subagentStatusCallback({
+              sessionId: parentSessionId,
+              status: "subagent_text",
+              subagentId,
+              label,
+              text,
+            });
+          }
+        },
       );
     }
 
@@ -2434,6 +2449,7 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
         status: "subagent_done",
         subagentId,
         label,
+        result: result.content,
       });
     }
 
@@ -2994,6 +3010,18 @@ async function realtimeAgentLoop(
           undefined,  // sessionId (for checkpoint)
           undefined,  // onRetry
           rtTaskId,   // taskId — so callTool resolves the correct call context
+          (text: string) => {
+            // Stream agent's intermediate reasoning text to chat log
+            if (subagentStatusCallback) {
+              subagentStatusCallback({
+                sessionId,
+                status: "realtime_agent_text",
+                agentId,
+                label: agentDef.name,
+                text,
+              });
+            }
+          },
         );
       }
 
@@ -3023,6 +3051,8 @@ async function realtimeAgentLoop(
           status: "realtime_agent_done",
           agentId,
           label: agentDef.name,
+          result: resultContent,
+          task: msg.payload.task,
         });
       }
 
@@ -3727,9 +3757,23 @@ export async function callTool(name: string, args: any, signal?: AbortSignal, ta
     case "create_architecture": {
       const { description, architectureType, agentCount } = args;
       if (!description) return { ok: false, error: "description is required" };
-      const archType = architectureType || "hierarchical";
-      const count = agentCount || "auto";
+      const currentSettings = await getSettings();
+      // Resolve defaults from settings (Auto Architecture — AI decides)
+      const archType = architectureType || currentSettings.autoArchitectureType || "hierarchical";
+      const count = agentCount || currentSettings.autoAgentCount || "auto";
+      const protocols: string[] = currentSettings.autoProtocols || (currentSettings.autoProtocol ? [currentSettings.autoProtocol] : ["tcp"]);
+      const protocol = protocols.join(", ");
       const sessionId = _currentParentSessionId || taskId || "default";
+
+      // Optional base template (user linked an architecture file in settings)
+      let baseTemplatePrompt = "";
+      if (currentSettings.subAgentConfigFile) {
+        const baseConfig = loadAgentConfig(currentSettings.subAgentConfigFile);
+        if (baseConfig) {
+          const baseAgents = (baseConfig.agents || []).filter((a: any) => a.role !== "human");
+          baseTemplatePrompt = `\n\nBASE TEMPLATE (clone and adapt from "${currentSettings.subAgentConfigFile}"):\nSystem: ${baseConfig.system?.name || "Unknown"}, Mode: ${baseConfig.system?.orchestration_mode || "hierarchical"}\nAgents:\n${baseAgents.map((a: any) => `- ${a.id} (${a.role}): ${a.persona || a.name}`).join("\n")}\n\nUse this template as a starting point. Keep similar agent roles and structure, but adapt names, personas, and responsibilities to match the user's request.`;
+        }
+      }
 
       // Use LLM to generate architecture (same prompt as /agents/generate-system)
       const caller = await getSubagentCaller();
@@ -3737,15 +3781,16 @@ export async function callTool(name: string, args: any, signal?: AbortSignal, ta
         [{ role: "user", content: `Based on this description, generate a complete multi-agent system configuration as a JSON object.
 
 User Request: ${description}
-
-Architecture Type: ${archType}
-Number of Agents: ${count === "auto" ? "Determine the optimal number based on the task" : count}
+${baseTemplatePrompt}
+Architecture Type: ${!archType || archType === "auto" ? "Choose the best architecture for this task (hierarchical, flat, mesh, hybrid, pipeline, or p2p)" : archType}
+Number of Agents: ${!count || count === "auto" ? "Determine the optimal number based on the task (default 3-8)" : count}
+Connection Protocol: ${protocol}
 
 Return ONLY a valid JSON object (no markdown, no code fences) with this exact structure:
 {
   "system": {
     "name": "System Name",
-    "orchestration_mode": "${archType}",
+    "orchestration_mode": "${!archType || archType === "auto" ? "chosen_type" : archType}",
     "communication_protocol": "structured_handoff",
     "context_passing": "full_chain"
   },
@@ -3756,8 +3801,8 @@ Return ONLY a valid JSON object (no markdown, no code fences) with this exact st
       "role": "one of: human, orchestrator, worker, checker, reporter, researcher, peer",
       "persona": "Detailed 2-3 sentence persona description",
       "responsibilities": ["responsibility 1", "responsibility 2", "responsibility 3"],
-      "bus": { "enabled": true/false, "topics": ["topic1", "topic2"] },
-      "mesh": { "enabled": true/false }
+      "bus": { "enabled": true, "topics": ["topic1", "topic2"] },
+      "mesh": { "enabled": false }
     }
   ],
   "connections": [
@@ -3765,7 +3810,7 @@ Return ONLY a valid JSON object (no markdown, no code fences) with this exact st
       "from": "source_agent_id",
       "to": "target_agent_id",
       "label": "connection_label",
-      "protocol": "one of: tcp, queue",
+      "protocol": "${protocol}",
       "topics": ["topic1"]
     }
   ]
@@ -3776,12 +3821,12 @@ IMPORTANT RULES:
 - For hierarchical: human connects to orchestrator, orchestrator connects to all workers
 - For flat: human connects to all agents directly
 - For mesh: do NOT generate connections — mesh mode bypasses access control
-- For hybrid: human → orchestrator via tcp, workers have mesh.enabled: true
+- For hybrid: human → orchestrator, workers have mesh.enabled: true
 - For pipeline: agents form a sequential chain
 - For p2p: ALL non-human agents use role "peer", no connections, use blackboard
 - Each non-human agent must have a meaningful persona and 3-5 responsibilities
 - Agent IDs must be snake_case
-- Connections use ONLY "tcp" or "queue" protocol
+- Connections must use "${protocol}" protocol
 - Every non-human agent MUST have at least one incoming connection
 - Generate between 3-8 agents (including human) unless user specifies otherwise` }],
         "You are an expert multi-agent system architect. Generate complete, well-structured agent system configurations as JSON. Return ONLY valid JSON, nothing else. Do not use any tools.",

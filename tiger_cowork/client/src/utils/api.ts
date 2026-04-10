@@ -46,6 +46,7 @@ export const api = {
   getSessions: () => request("/chat/sessions"),
   getSession: (id: string) => request(`/chat/sessions/${id}`),
   getActivityLog: (id: string) => request(`/chat/sessions/${id}/activity`),
+  getChatLog: (id: string) => request(`/chat/sessions/${id}/chatlog`),
   createSession: (title?: string) => request("/chat/sessions", { method: "POST", body: JSON.stringify({ title }) }),
   deleteSession: (id: string) => request(`/chat/sessions/${id}`, { method: "DELETE" }),
   renameSession: (id: string, title: string) => request(`/chat/sessions/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
@@ -85,6 +86,7 @@ export const api = {
   // Tasks
   getTasks: () => request("/tasks"),
   getActiveTasks: () => request("/tasks/active"),
+  getFinishedTasks: () => request("/tasks/finished"),
   killActiveTask: (id: string) => request(`/tasks/active/${id}/kill`, { method: "POST" }),
   createTask: (data: any) => request("/tasks", { method: "POST", body: JSON.stringify(data) }),
   updateTask: (id: string, data: any) => request(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
