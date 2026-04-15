@@ -8,7 +8,7 @@ echo      TigrimOS - Stopping
 echo   ========================================
 echo.
 
-wsl -d TigrimOS -- bash -c "pkill -f 'node.*server' 2>/dev/null; pkill -f 'tsx.*index' 2>/dev/null; echo 'Server stopped.'"
+wsl -d TigrimOS -u root -- bash -c "pkill -f 'node.*server' 2>/dev/null; pkill -f 'tsx.*index' 2>/dev/null; echo 'Server stopped.'"
 
 echo.
 echo   TigrimOS has been stopped.

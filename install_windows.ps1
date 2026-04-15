@@ -67,7 +67,7 @@ $welcomeXaml = @"
                 <TextBlock Text="&#x1F42F;" FontSize="56" HorizontalAlignment="Center" Margin="0,0,0,8"/>
                 <TextBlock Text="TigrimOS" FontSize="26" FontWeight="Bold" Foreground="White"
                            HorizontalAlignment="Center" Margin="0,0,0,2"/>
-                <TextBlock Text="v1.1.1 - Windows Installer" FontSize="13" Foreground="#80FFFFFF"
+                <TextBlock Text="v1.3.0 - Windows Installer" FontSize="13" Foreground="#80FFFFFF"
                            HorizontalAlignment="Center" Margin="0,0,0,24"/>
 
                 <!-- Description -->
@@ -543,6 +543,8 @@ Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRes
                 'set -e'
                 'cd /opt/TigrimOS/tiger_cowork'
                 'npm install'
+                # Ensure @xterm packages are present in client/package.json (may be missing from older repo clones)
+                'node -e "const fs=require(\"fs\"),p=JSON.parse(fs.readFileSync(\"client/package.json\",\"utf8\"));p.dependencies[\"@xterm/xterm\"]=p.dependencies[\"@xterm/xterm\"]||\"^5.3.0\";p.dependencies[\"@xterm/addon-fit\"]=p.dependencies[\"@xterm/addon-fit\"]||\"^0.10.0\";fs.writeFileSync(\"client/package.json\",JSON.stringify(p,null,2)+\"\n\");"'
                 'cd client && npm install && npm run build'
             ) -join "`n"
             $buildScript | wsl -d $WSL_DISTRO -u root -- bash -c 'tr -d ''\015'' | bash' *>> $LOG_FILE
@@ -570,9 +572,15 @@ Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRes
             # ============================================================
             Update-ProgressInner 7 7 "Starting TigrimOS..." "Launching server"
 
-            # Kill any existing
-            wsl -d $WSL_DISTRO -u root -- bash -c "pkill -f 'node.*server' 2>/dev/null; pkill -f 'tsx.*index' 2>/dev/null; true"
-            Start-Sleep -Seconds 1
+            # Kill any existing server and wait for port 3001 to be fully released
+            wsl -d $WSL_DISTRO -u root -- bash -c "pkill -9 -f 'node.*server' 2>/dev/null; pkill -9 -f 'tsx.*index' 2>/dev/null; true"
+            $portWait = 0
+            while ($portWait -lt 10) {
+                Start-Sleep -Seconds 1
+                $portWait++
+                $portFree = wsl -d $WSL_DISTRO -u root -- bash -c "ss -tlnp 2>/dev/null | grep -q ':3001' && echo used || echo free" 2>&1
+                if ($portFree -match "free") { break }
+            }
 
             # Start server in a minimized window — WSL session must stay alive for the server to persist
             $serverBat = Join-Path $scriptDir "TigrimOSServer.bat"
