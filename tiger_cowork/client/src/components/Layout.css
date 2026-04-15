@@ -23,10 +23,11 @@
   gap: 8px;
 }
 
-.header-logo-img {
-  height: 32px;
-  width: auto;
-  object-fit: contain;
+.logo-text {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
 }
 
 .logo-badge {
@@ -53,6 +54,40 @@
 }
 
 @keyframes swarmGlow {
+  0%, 100% { box-shadow: 0 0 4px rgba(245, 158, 11, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(245, 158, 11, 0.6); }
+}
+
+.logo-auto-arch-tag {
+  font-size: 10px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #9c27b0, #7b1fa2);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  animation: autoArchGlow 2s ease-in-out infinite;
+}
+
+@keyframes autoArchGlow {
+  0%, 100% { box-shadow: 0 0 4px rgba(156, 39, 176, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(156, 39, 176, 0.6); }
+}
+
+.logo-auto-swarm-tag {
+  font-size: 10px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #f59e0b, #e65100);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  animation: autoSwarmGlow 2s ease-in-out infinite;
+}
+
+@keyframes autoSwarmGlow {
   0%, 100% { box-shadow: 0 0 4px rgba(245, 158, 11, 0.3); }
   50% { box-shadow: 0 0 12px rgba(245, 158, 11, 0.6); }
 }

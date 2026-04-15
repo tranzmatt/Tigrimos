@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { api } from "../utils/api";
+import { useTzMode, setTzMode } from "../utils/timezone";
 import "./PageStyles.css";
-
-const TerminalComponent = lazy(() => import("../components/Terminal"));
 
 const AgentEditor = lazy(() => import("../components/AgentEditor"));
 
@@ -44,21 +43,13 @@ export default function SettingsPage() {
   const [newProviderModel, setNewProviderModel] = useState("");
   const [_oauthStatus, _setOauthStatus] = useState<{ message: string; success: boolean } | null>(null); // reserved for future use
   const yamlUploadRef = useRef<HTMLInputElement>(null);
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [showSoulIdentity, setShowSoulIdentity] = useState(false);
+  const tzMode = useTzMode();
+  const browserTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "local"; } catch { return "local"; } })();
 
-  // Cloudflare Tunnel
-  const [tunnelStatus, setTunnelStatus] = useState<"stopped" | "starting" | "installing" | "running" | "error">("stopped");
-  const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
-  const [tunnelError, setTunnelError] = useState<string | null>(null);
-  const [tunnelLoading, setTunnelLoading] = useState(false);
-  const [copiedTunnelUrl, setCopiedTunnelUrl] = useState(false);
-
-  // Remote Bridge Tokens (this machine's tokens)
-  const [bridgeTokens, setBridgeTokens] = useState<Array<{ id: string; name: string; token: string; createdAt: string }>>([]);
-  const [newBridgeTokenName, setNewBridgeTokenName] = useState("");
-  const [copiedBridgeTokenId, setCopiedBridgeTokenId] = useState<string | null>(null);
-  const [showBridgeTokenId, setShowBridgeTokenId] = useState<string | null>(null);
+  // Remote Token (this machine's token for incoming remote connections)
+  const [remoteTokenValue, setRemoteTokenValue] = useState("");
+  const [remoteTokenVisible, setRemoteTokenVisible] = useState(false);
+  const [remoteTokenCopied, setRemoteTokenCopied] = useState(false);
 
   // Remote Instances
   const [newRemoteName, setNewRemoteName] = useState("");
@@ -71,13 +62,8 @@ export default function SettingsPage() {
     api.getSettings().then(setSettings);
     api.mcpStatus().then(setMcpStatuses).catch(() => {});
     api.getFileTokens().then(setFileTokens).catch(() => {});
-    api.getRemoteBridgeTokens().then(setBridgeTokens).catch(() => {});
-    api.getTunnelStatus().then((s: any) => {
-      setTunnelStatus(s.status || "stopped");
-      setTunnelUrl(s.url || null);
-      setTunnelError(s.error || null);
-    }).catch(() => {});
     api.getAgentConfigs().then(setAgentConfigs).catch(() => {});
+    api.getRemoteToken().then((res: any) => setRemoteTokenValue(res.token || "")).catch(() => {});
   }, []);
 
   const handleYamlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -106,7 +92,8 @@ export default function SettingsPage() {
   };
 
   const save = async () => {
-    await api.saveSettings(settings);
+    const { _soulOpen, ...settingsToSave } = settings;
+    await api.saveSettings(settingsToSave);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -234,6 +221,68 @@ export default function SettingsPage() {
 
       <div className="settings-grid">
         <section className="card">
+          <h3>Time display</h3>
+          <p style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 0, marginBottom: 12 }}>
+            How timestamps are shown across the app (chat logs, task lists, etc.).
+            Per-browser preference — does not affect the server.
+          </p>
+          <div
+            role="radiogroup"
+            aria-label="Time display mode"
+            style={{
+              display: "inline-flex",
+              border: "1px solid var(--border, #d1d5db)",
+              borderRadius: 8,
+              overflow: "hidden",
+              background: "var(--bg-elevated, #f9fafb)",
+            }}
+          >
+            {([
+              { value: "local" as const, label: "Local time", hint: browserTz },
+              { value: "server" as const, label: "Server time", hint: "UTC" },
+            ]).map((opt, idx) => {
+              const active = tzMode === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setTzMode(opt.value)}
+                  style={{
+                    padding: "10px 18px",
+                    border: "none",
+                    borderLeft: idx === 0 ? "none" : "1px solid var(--border, #d1d5db)",
+                    background: active ? "#2563eb" : "transparent",
+                    color: active ? "#ffffff" : "var(--text, #374151)",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: active ? 600 : 500,
+                    fontFamily: "system-ui, sans-serif",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: 2,
+                    minWidth: 140,
+                    transition: "background 0.15s",
+                  }}
+                >
+                  <span>{opt.label}</span>
+                  <span style={{
+                    fontSize: 10,
+                    opacity: 0.8,
+                    fontWeight: 400,
+                    color: active ? "#dbeafe" : "var(--text-tertiary, #9ca3af)",
+                  }}>
+                    {opt.hint}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="card">
           <h3>AI Provider</h3>
           <div className="form-group">
             <label>Provider</label>
@@ -254,12 +303,9 @@ export default function SettingsPage() {
                     openrouter: { url: "https://openrouter.ai/api/v1", model: "x-ai/grok-4.20-beta" },
                     zai: { url: "https://api.z.ai/api/coding/paas/v4", model: "GLM-5.1" },
                     anthropic_claude_code: { url: "https://api.anthropic.com/v1", model: "claude-sonnet-4-20250514" },
-                    kimi: { url: "https://api.kimi.com/coding/v1", model: "kimi-k2.5" },
                     minimax: { url: "https://api.minimax.io/v1", model: "MiniMax-M2.7" },
                     google_ai_studio: { url: "https://generativelanguage.googleapis.com/v1beta/openai/", model: "gemini-3-flash-preview" },
-                    ollama_local: { url: "http://host.local:11434/v1", model: "llama3.2" },
-                    lmstudio_local: { url: "http://host.local:1234/v1", model: "local-model" },
-                    openai_local: { url: "http://host.local:8080/v1", model: "local-model" },
+                    kimi: { url: "https://api.kimi.com/coding/v1", model: "kimi-k2-0905-preview" },
                   };
                   // Check custom providers for defaults
                   const customProviders: Array<{ id: string; name: string; url: string; model: string }> = settings.customProviders || [];
@@ -275,19 +321,16 @@ export default function SettingsPage() {
                 <option value="openrouter">OpenRouter</option>
                 <option value="zai">zAi</option>
                 <option value="anthropic_claude_code">Anthropic (Claude)</option>
-                <option value="kimi">Kimi (Moonshot)</option>
                 <option value="minimax">MiniMax</option>
                 <option value="google_ai_studio">Google AI Studio</option>
-                <option value="ollama_local">Ollama (Local macOS)</option>
-                <option value="lmstudio_local">LM Studio (Local macOS)</option>
-                <option value="openai_local">OpenAI-Compatible (Local macOS)</option>
+                <option value="kimi">Kimi (Moonshot)</option>
                 {(settings.customProviders || []).map((p: any) => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
               <button className="btn btn-secondary" style={{ whiteSpace: "nowrap" }} onClick={() => setShowAddProvider(true)}>+ Add</button>
               {/* Show remove button only for custom providers */}
-              {!(["openrouter", "zai", "anthropic_claude_code", "kimi", "minimax", "google_ai_studio", "ollama_local", "lmstudio_local", "openai_local"].includes(settings.aiProvider || "openrouter")) && (
+              {!(["openrouter", "zai", "anthropic_claude_code", "minimax", "google_ai_studio", "kimi"].includes(settings.aiProvider || "openrouter")) && (
                 <button className="btn btn-danger" style={{ whiteSpace: "nowrap" }} onClick={() => {
                   if (!confirm(`Remove provider "${(settings.customProviders || []).find((p: any) => p.id === settings.aiProvider)?.name || settings.aiProvider}"?`)) return;
                   const customProviders = (settings.customProviders || []).filter((p: any) => p.id !== settings.aiProvider);
@@ -302,14 +345,6 @@ export default function SettingsPage() {
               )}
             </div>
             <p className="hint">Switch between AI providers. Each provider keeps its own API key, URL, and model.</p>
-            {["ollama_local", "lmstudio_local", "openai_local"].includes(settings.aiProvider || "") && (
-              <p className="hint" style={{ color: "var(--success, #4caf50)", marginTop: 4 }}>
-                Local model detected. The VM connects to your Mac via <code>host.local</code>. Make sure the AI server is running on your Mac.
-                {settings.aiProvider === "ollama_local" && " Run: ollama serve"}
-                {settings.aiProvider === "lmstudio_local" && " Start the LM Studio local server."}
-                {" No API key needed for most local servers."}
-              </p>
-            )}
           </div>
           {showAddProvider && (
             <div style={{ background: "var(--bg-secondary, #1a1a2e)", borderRadius: 8, padding: 16, marginBottom: 16, border: "1px solid var(--border, #333)" }}>
@@ -412,53 +447,6 @@ export default function SettingsPage() {
         </section>
 
         <section className="card">
-          <h3
-            style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}
-            onClick={() => setShowSoulIdentity(!showSoulIdentity)}
-          >
-            <span style={{ transition: "transform 0.2s", transform: showSoulIdentity ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block" }}>&#9654;</span>
-            Soul &amp; Identity
-            <span style={{ fontSize: 12, fontWeight: 400, color: "#888", marginLeft: 4 }}>
-              {settings.soulMd || settings.identityMd ? "(configured)" : "(not set)"}
-            </span>
-          </h3>
-          {showSoulIdentity && (
-            <div>
-              <p className="hint" style={{ marginBottom: 12 }}>
-                These are injected into the orchestrator's system prompt when answering humans.
-                <strong> SOUL.md</strong> defines internal cognition, values, and behavior (~3,000 chars).
-                <strong> IDENTITY.md</strong> defines external presentation — name, avatar, tone (~200 chars).
-                Leave empty to use the default TigrimOS personality.
-              </p>
-              <div className="form-group">
-                <label>SOUL.md — Internal cognition, values, behavior</label>
-                <textarea
-                  rows={10}
-                  style={{ fontFamily: "monospace", fontSize: 13 }}
-                  placeholder={`Example:\nYou are a thoughtful senior engineer who values clarity over cleverness.\nYou always explain trade-offs before recommending a solution.\nYou prefer simple, maintainable code over elegant abstractions.`}
-                  value={settings.soulMd || ""}
-                  onChange={(e) => setSettings({ ...settings, soulMd: e.target.value })}
-                  maxLength={5000}
-                />
-                <p className="hint">{(settings.soulMd || "").length} / 3,000 recommended chars</p>
-              </div>
-              <div className="form-group">
-                <label>IDENTITY.md — External presentation, name, avatar</label>
-                <textarea
-                  rows={4}
-                  style={{ fontFamily: "monospace", fontSize: 13 }}
-                  placeholder={`Example:\nName: Tiger\nTone: Friendly and direct\nAvatar: A confident tiger wearing glasses`}
-                  value={settings.identityMd || ""}
-                  onChange={(e) => setSettings({ ...settings, identityMd: e.target.value })}
-                  maxLength={1000}
-                />
-                <p className="hint">{(settings.identityMd || "").length} / 200 recommended chars</p>
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="card">
           <h3>Sandbox</h3>
           <div className="form-group">
             <label>Sandbox Directory</label>
@@ -469,6 +457,68 @@ export default function SettingsPage() {
             <label>Python Path</label>
             <input value={settings.pythonPath || ""} onChange={(e) => setSettings({ ...settings, pythonPath: e.target.value })} placeholder="python3" />
           </div>
+        </section>
+
+        <section className="card">
+          <h3
+            style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}
+            onClick={() => setSettings({ ...settings, _soulOpen: !settings._soulOpen })}
+          >
+            Orchestrator Soul & Identity
+            <span style={{ fontSize: 12, opacity: 0.6 }}>{settings._soulOpen ? "▼" : "▶"}</span>
+            {(settings.orchestratorSoul || settings.orchestratorIdentity) && (
+              <span style={{ fontSize: 11, opacity: 0.5, fontWeight: 400 }}>(configured)</span>
+            )}
+          </h3>
+          {!settings._soulOpen && (
+            <p className="hint">Click to configure the orchestrator's internal cognition (SOUL.md) and external presentation (IDENTITY.md). These are injected into the system prompt when chatting with humans.</p>
+          )}
+          {settings._soulOpen && (
+            <>
+              <div className="form-group">
+                <label>SOUL.md — Internal Cognition, Values & Behavior</label>
+                <textarea
+                  value={settings.orchestratorSoul || ""}
+                  onChange={(e) => setSettings({ ...settings, orchestratorSoul: e.target.value.slice(0, 3000) })}
+                  rows={10}
+                  maxLength={3000}
+                  placeholder={"Define the orchestrator's internal cognition:\n- Core values and principles\n- Decision-making heuristics\n- Behavioral priors and communication style\n- Ethical boundaries\n- How to handle ambiguity\n\nThis is injected as a behavioral prior — it directly shapes model outputs."}
+                  style={{ fontFamily: "monospace", fontSize: 13 }}
+                />
+                <p className="hint">{(settings.orchestratorSoul || "").length}/3,000 chars — Directly affects model outputs. Modifiable by agent with user notification.</p>
+              </div>
+              <div className="form-group">
+                <label>IDENTITY.md — External Presentation</label>
+                <textarea
+                  value={settings.orchestratorIdentity || ""}
+                  onChange={(e) => setSettings({ ...settings, orchestratorIdentity: e.target.value.slice(0, 200) })}
+                  rows={3}
+                  maxLength={200}
+                  placeholder={"Display name, avatar description, external persona.\nTypically static — used for image generation and display."}
+                  style={{ fontFamily: "monospace", fontSize: 13 }}
+                />
+                <p className="hint">{(settings.orchestratorIdentity || "").length}/200 chars — Affects display name, avatar, image generation. Typically static.</p>
+              </div>
+              <div style={{ background: "var(--bg-secondary, #1a1a2e)", borderRadius: 8, padding: 12, fontSize: 12, opacity: 0.8 }}>
+                <strong>Key Distinction:</strong>
+                <table style={{ width: "100%", marginTop: 8, borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border, #333)" }}>
+                      <th style={{ textAlign: "left", padding: "4px 8px" }}>Dimension</th>
+                      <th style={{ textAlign: "left", padding: "4px 8px" }}>SOUL.md</th>
+                      <th style={{ textAlign: "left", padding: "4px 8px" }}>IDENTITY.md</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td style={{ padding: "4px 8px" }}>Concern</td><td style={{ padding: "4px 8px" }}>Internal cognition, values, behavior</td><td style={{ padding: "4px 8px" }}>External presentation, name, avatar</td></tr>
+                    <tr><td style={{ padding: "4px 8px" }}>Token allocation</td><td style={{ padding: "4px 8px" }}>~3,000 chars</td><td style={{ padding: "4px 8px" }}>~200 chars</td></tr>
+                    <tr><td style={{ padding: "4px 8px" }}>Modifiable by agent</td><td style={{ padding: "4px 8px" }}>Yes (with user notification)</td><td style={{ padding: "4px 8px" }}>Typically static</td></tr>
+                    <tr><td style={{ padding: "4px 8px" }}>Affects model outputs</td><td style={{ padding: "4px 8px" }}>Directly (behavioral prior)</td><td style={{ padding: "4px 8px" }}>Indirectly (display, image gen)</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </section>
 
         <section className="card">
@@ -612,108 +662,162 @@ export default function SettingsPage() {
                     ? "All agents boot at session start and stay alive — tasks are sent via bus for true parallel execution"
                     : settings.subAgentMode === "manual"
                     ? "Agents are defined by a YAML configuration file you provide"
-                    : settings.subAgentMode === "auto_swarm"
-                    ? "The AI analyzes your task and selects the best agent swarm from your saved YAML configurations"
                     : settings.subAgentMode === "auto_create"
-                    ? "The AI creates a custom agent architecture tailored to your task, saves it as YAML, and runs it in realtime mode"
-                    : "The AI automatically spawns and manages sub-agents as needed"}
+                    ? "The AI analyzes your task, designs a custom multi-agent architecture (YAML), saves it, and boots all agents in realtime mode"
+                    : settings.subAgentMode === "auto_swarm"
+                    ? "The AI reviews all your saved YAML architectures and selects the best one for the current task, then boots in realtime mode"
+                    : "The AI freely spawns sub-agents as needed — no configuration required"}
                 </p>
               </div>
 
               {(settings.subAgentMode === "manual" || settings.subAgentMode === "realtime" || settings.subAgentMode === "auto_swarm" || settings.subAgentMode === "auto_create") ? (
                 <>
-                  {/* Auto Create — AI Architecture Settings */}
+                  {/* Auto Create Settings */}
                   {settings.subAgentMode === "auto_create" && (
-                    <details style={{ marginTop: 4, marginBottom: 8, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 12px", background: "rgba(255,255,255,0.03)" }}>
-                      <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: 13, opacity: 0.85, userSelect: "none" }}>
-                        AI Architecture Settings
-                        <span style={{ fontWeight: 400, opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
-                          ({settings.autoArchitectureType || "auto"} / {settings.autoAgentCount || "3-8"} agents / {(settings.autoProtocols || ["tcp"]).join(", ")})
-                        </span>
-                      </summary>
-                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 12 }}>
-                        <div className="form-group" style={{ margin: 0 }}>
-                          <label>Architecture Type</label>
+                    <>
+                      {/* Collapsible AI Architecture Settings */}
+                      <details style={{ marginTop: 4, marginBottom: 8, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 12px", background: "rgba(255,255,255,0.03)" }}>
+                        <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: 13, opacity: 0.85, userSelect: "none" }}>
+                          AI Architecture Settings
+                          <span style={{ fontWeight: 400, opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
+                            ({settings.autoArchitectureType || "auto"} / {settings.autoAgentCount || "3-8"} agents / {(settings.autoProtocols || ["tcp"]).join(", ")})
+                          </span>
+                        </summary>
+                        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 12 }}>
+                          {/* Architecture Type */}
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label>Architecture Type</label>
+                            <select
+                              value={settings.autoArchitectureType || "auto"}
+                              onChange={(e) => setSettings({ ...settings, autoArchitectureType: e.target.value })}
+                            >
+                              <option value="auto">Auto (AI decides)</option>
+                              <option value="hierarchical">Hierarchical — orchestrator delegates to workers</option>
+                              <option value="flat">Flat — human controls all agents directly</option>
+                              <option value="mesh">Mesh — free collaboration, no preset connections</option>
+                              <option value="hybrid">Hybrid — orchestrator + mesh-enabled workers</option>
+                              <option value="pipeline">Pipeline — sequential chain of agents</option>
+                              <option value="p2p">P2P — peer swarm with blackboard consensus</option>
+                            </select>
+                          </div>
+
+                          {/* Agent Count */}
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label>Agent Count</label>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                              <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                value={settings.autoAgentCount || ""}
+                                placeholder="3-8"
+                                onChange={(e) => setSettings({ ...settings, autoAgentCount: e.target.value ? Number(e.target.value) : "" })}
+                                style={{ width: 80 }}
+                              />
+                              <span style={{ fontSize: 12, opacity: 0.6 }}>default: 3–8 (AI decides if empty)</span>
+                            </div>
+                          </div>
+
+                          {/* Protocol */}
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label>Connection Protocol</label>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                              {[
+                                { value: "tcp", label: "TCP", desc: "point-to-point" },
+                                { value: "queue", label: "Queue", desc: "async queue" },
+                                { value: "bus", label: "Bus", desc: "pub/sub" },
+                                { value: "mesh", label: "Mesh", desc: "peer-to-peer" },
+                              ].map((proto) => {
+                                const protocols: string[] = settings.autoProtocols || ["tcp"];
+                                const selected = protocols.includes(proto.value);
+                                return (
+                                  <button
+                                    key={proto.value}
+                                    type="button"
+                                    onClick={() => {
+                                      const next = selected
+                                        ? protocols.filter((p) => p !== proto.value)
+                                        : [...protocols, proto.value];
+                                      setSettings({ ...settings, autoProtocols: next.length > 0 ? next : ["tcp"] });
+                                    }}
+                                    style={{
+                                      padding: "6px 14px",
+                                      borderRadius: 20,
+                                      border: selected ? "2px solid #7c4dff" : "2px solid rgba(255,255,255,0.25)",
+                                      background: selected ? "rgba(124,77,255,0.25)" : "transparent",
+                                      color: selected ? "#d4c4ff" : "rgba(255,255,255,0.75)",
+                                      cursor: "pointer",
+                                      fontSize: 12,
+                                      fontWeight: selected ? 600 : 400,
+                                      transition: "all 0.15s ease",
+                                    }}
+                                  >
+                                    {proto.label} <span style={{ opacity: 0.6, fontSize: 11 }}>{proto.desc}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <p className="hint">Select one or more protocols for agent connections.</p>
+                          </div>
+                        </div>
+                      </details>
+
+                      {/* Base Template File */}
+                      <div className="form-group">
+                        <label>Base Template File</label>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                           <select
-                            value={settings.autoArchitectureType || "auto"}
-                            onChange={(e) => setSettings({ ...settings, autoArchitectureType: e.target.value })}
+                            value={settings.subAgentConfigFile || ""}
+                            onChange={(e) => setSettings({ ...settings, subAgentConfigFile: e.target.value })}
                           >
-                            <option value="auto">Auto (AI decides)</option>
-                            <option value="hierarchical">Hierarchical — orchestrator delegates to workers</option>
-                            <option value="flat">Flat — human controls all agents directly</option>
-                            <option value="mesh">Mesh — free collaboration, no preset connections</option>
-                            <option value="hybrid">Hybrid — orchestrator + mesh-enabled workers</option>
-                            <option value="pipeline">Pipeline — sequential chain of agents</option>
-                            <option value="p2p">P2P — peer swarm with blackboard consensus</option>
+                            <option value="">None (AI creates from scratch)</option>
+                            {agentConfigs.map((cfg: any) => (
+                              <option key={cfg.filename} value={cfg.filename}>
+                                {cfg.name} ({cfg.filename}) — {cfg.agentCount} agents
+                              </option>
+                            ))}
                           </select>
+                          {settings.subAgentConfigFile && (
+                            <button
+                              style={{
+                                display: "inline-flex", alignItems: "center", gap: 4,
+                                background: "#9c27b0", color: "#fff", border: "none", borderRadius: 12,
+                                padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer",
+                                textDecoration: "none", whiteSpace: "nowrap",
+                              }}
+                              title={`Open ${settings.subAgentConfigFile} in Agent System Editor`}
+                              onClick={async () => {
+                                const data = await api.getAgentConfig(settings.subAgentConfigFile);
+                                if (data.content) {
+                                  setAgentEditorInitYaml(data.content);
+                                  setAgentEditorInitFilename(settings.subAgentConfigFile);
+                                  setShowAgentEditor(true);
+                                }
+                              }}
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/>
+                              </svg>
+                              {settings.subAgentConfigFile}
+                            </button>
+                          )}
                         </div>
-                        <div className="form-group" style={{ margin: 0 }}>
-                          <label>Agent Count</label>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                            <input
-                              type="number"
-                              min={1}
-                              max={20}
-                              value={settings.autoAgentCount || ""}
-                              placeholder="3-8"
-                              onChange={(e) => setSettings({ ...settings, autoAgentCount: e.target.value ? Number(e.target.value) : "" })}
-                              style={{ width: 80 }}
-                            />
-                            <span style={{ fontSize: 12, opacity: 0.6 }}>default: 3–8 (AI decides if empty)</span>
-                          </div>
-                        </div>
-                        <div className="form-group" style={{ margin: 0 }}>
-                          <label>Connection Protocol</label>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
-                            {[
-                              { value: "tcp", label: "TCP", desc: "point-to-point" },
-                              { value: "queue", label: "Queue", desc: "async queue" },
-                              { value: "bus", label: "Bus", desc: "pub/sub" },
-                              { value: "mesh", label: "Mesh", desc: "peer-to-peer" },
-                            ].map((proto) => {
-                              const protocols: string[] = settings.autoProtocols || ["tcp"];
-                              const selected = protocols.includes(proto.value);
-                              return (
-                                <button
-                                  key={proto.value}
-                                  type="button"
-                                  onClick={() => {
-                                    const next = selected
-                                      ? protocols.filter((p: string) => p !== proto.value)
-                                      : [...protocols, proto.value];
-                                    setSettings({ ...settings, autoProtocols: next.length > 0 ? next : ["tcp"] });
-                                  }}
-                                  style={{
-                                    padding: "6px 14px",
-                                    borderRadius: 20,
-                                    border: selected ? "2px solid #7c4dff" : "2px solid rgba(255,255,255,0.25)",
-                                    background: selected ? "rgba(124,77,255,0.25)" : "transparent",
-                                    color: selected ? "#d4c4ff" : "rgba(255,255,255,0.75)",
-                                    cursor: "pointer",
-                                    fontSize: 12,
-                                    fontWeight: selected ? 600 : 400,
-                                    transition: "all 0.15s ease",
-                                  }}
-                                >
-                                  {proto.label} <span style={{ opacity: 0.6, fontSize: 11 }}>{proto.desc}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <p className="hint">Select one or more protocols for agent connections.</p>
-                        </div>
+                        <p className="hint">
+                          Optionally link an architecture file as a base template. The AI will clone and adapt it for each task, or create from scratch if none selected.
+                        </p>
                       </div>
-                    </details>
+                    </>
                   )}
 
-                  {/* Manual YAML Config */}
+                  {/* Manual YAML Config (for manual/realtime/auto_swarm) */}
+                  {settings.subAgentMode !== "auto_create" && (
                   <div className="form-group">
-                    <label>{settings.subAgentMode === "auto_create" ? "Base Template File" : "Agent Configuration File"}</label>
+                    <label>Agent Configuration File</label>
                     <select
                       value={settings.subAgentConfigFile || ""}
                       onChange={(e) => setSettings({ ...settings, subAgentConfigFile: e.target.value })}
                     >
-                      <option value="">{settings.subAgentMode === "auto_create" ? "None (AI creates from scratch)" : "Select a config file..."}</option>
+                      <option value="">Select a config file...</option>
                       {agentConfigs.map((cfg: any) => (
                         <option key={cfg.filename} value={cfg.filename}>
                           {cfg.name} ({cfg.filename}) — {cfg.agentCount} agents
@@ -724,6 +828,7 @@ export default function SettingsPage() {
                       Select a YAML file that defines your agent team. Create one below or place .yaml files in data/agents/
                     </p>
                   </div>
+                  )}
 
                   {/* Saved configs list */}
                   {agentConfigs.length > 0 && (
@@ -968,6 +1073,188 @@ export default function SettingsPage() {
         </section>
 
         <section className="card">
+          <h3 style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            Remote Agent
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 400, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={!!settings.remoteEnabled}
+                onChange={(e) => setSettings({ ...settings, remoteEnabled: e.target.checked })}
+              />
+              Enable
+            </label>
+          </h3>
+          <p className="hint" style={{ marginBottom: 12 }}>
+            Allow this instance to accept peer-to-peer connections from other Tiger CoWork machines. When disabled, remote token authentication is rejected and the remote menu is hidden.
+          </p>
+        </section>
+
+        {settings.remoteEnabled && (<><section className="card">
+          <h3>Remote Agent Mode</h3>
+          <p className="hint" style={{ marginBottom: 12 }}>
+            Choose how incoming remote tasks are processed. &quot;Simple Chat&quot; uses a single LLM call.
+            Selecting an agent config runs the full realtime swarm architecture with progress reporting.
+          </p>
+          <div className="form-group">
+            <label>Agent Configuration for Incoming Tasks</label>
+            <select
+              value={settings.remoteAgentConfig || ""}
+              onChange={(e) => setSettings({ ...settings, remoteAgentConfig: e.target.value })}
+            >
+              <option value="">Simple Chat (no agents)</option>
+              {agentConfigs.map((cfg: any) => (
+                <option key={cfg.filename} value={cfg.filename}>
+                  {cfg.name} ({cfg.filename}) — {cfg.agentCount} agents
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Hidden System Prompt</label>
+            <p className="hint" style={{ marginTop: 0, marginBottom: 6 }}>
+              Private instructions prepended to every incoming remote task — invisible to the caller. Use it to set persona, scope, tone, or guardrails for how this instance answers.
+            </p>
+            <textarea
+              rows={5}
+              placeholder="e.g. You are the research desk for Team X. Always answer in bullet points and refuse requests unrelated to our dataset."
+              value={settings.remoteSystemPrompt || ""}
+              onChange={(e) => setSettings({ ...settings, remoteSystemPrompt: e.target.value })}
+              style={{ width: "100%", fontFamily: "monospace", fontSize: 13 }}
+            />
+          </div>
+        </section>
+
+        <section className="card">
+          <h3>Remote Token</h3>
+          <p className="hint" style={{ marginBottom: 12 }}>
+            This machine&apos;s remote token. Share it with other machines so they can connect to this instance.
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              readOnly
+              type={remoteTokenVisible ? "text" : "password"}
+              value={remoteTokenValue}
+              style={{ flex: 1, fontFamily: "monospace", fontSize: 13 }}
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+            />
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setRemoteTokenVisible(!remoteTokenVisible)}
+            >
+              {remoteTokenVisible ? "Hide" : "Show"}
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                navigator.clipboard.writeText(remoteTokenValue);
+                setRemoteTokenCopied(true);
+                setTimeout(() => setRemoteTokenCopied(false), 2000);
+              }}
+            >
+              {remoteTokenCopied ? "Copied!" : "Copy"}
+            </button>
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={async () => {
+                if (!confirm("Regenerate remote token? All existing remote connections using the old token will break.")) return;
+                const res = await api.regenerateRemoteToken();
+                setRemoteTokenValue(res.token);
+                setRemoteTokenVisible(true);
+              }}
+            >
+              Regenerate
+            </button>
+          </div>
+        </section>
+
+        <section className="card">
+          <h3>Remote Instances</h3>
+          <p className="hint" style={{ marginBottom: 12 }}>
+            Delegate tasks to Tiger Cowork running on other machines. Both machines run the same codebase — either can be orchestrator or worker.
+          </p>
+
+          {/* Existing instances */}
+          {(settings.remoteInstances || []).map((ri: any) => (
+            <div key={ri.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}>
+              <strong style={{ minWidth: 100 }}>{ri.name || ri.id}</strong>
+              <span style={{ flex: 1, opacity: 0.7, fontFamily: "monospace", fontSize: 12 }}>{ri.url}</span>
+              <span style={{ opacity: 0.5, fontFamily: "monospace", fontSize: 11 }}>{ri.token}</span>
+              <button
+                className="btn btn-secondary btn-sm"
+                disabled={remoteTesting === ri.id}
+                onClick={async () => {
+                  setRemoteTesting(ri.id);
+                  setRemoteTestResults((prev) => ({ ...prev, [ri.id]: null }));
+                  try {
+                    const res = await api.testRemoteInstance(ri.id);
+                    setRemoteTestResults((prev) => ({ ...prev, [ri.id]: res }));
+                  } catch (err: any) {
+                    setRemoteTestResults((prev) => ({ ...prev, [ri.id]: { ok: false, message: err.message } }));
+                  }
+                  setRemoteTesting(null);
+                }}
+              >
+                {remoteTesting === ri.id ? "Testing..." : "Test"}
+              </button>
+              {remoteTestResults[ri.id] && (
+                <span style={{ fontSize: 11, color: remoteTestResults[ri.id]!.ok ? "#34a853" : "#ea4335" }}>
+                  {remoteTestResults[ri.id]!.ok ? "✓" : "✗"} {remoteTestResults[ri.id]!.message?.slice(0, 40)}
+                </span>
+              )}
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={() => {
+                  const updated = (settings.remoteInstances || []).filter((r: any) => r.id !== ri.id);
+                  setSettings({ ...settings, remoteInstances: updated });
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          ))}
+
+          {/* Add new instance */}
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+            <input
+              placeholder="Name (e.g. cloud-pc)"
+              value={newRemoteName}
+              onChange={(e) => setNewRemoteName(e.target.value)}
+              style={{ width: 140 }}
+            />
+            <input
+              placeholder="URL (e.g. http://192.168.1.x:3001)"
+              value={newRemoteUrl}
+              onChange={(e) => setNewRemoteUrl(e.target.value)}
+              style={{ flex: 1, minWidth: 200 }}
+            />
+            <input
+              type="password"
+              placeholder="Token (ACCESS_TOKEN of remote)"
+              value={newRemoteToken}
+              onChange={(e) => setNewRemoteToken(e.target.value)}
+              style={{ width: 200 }}
+            />
+            <button
+              className="btn btn-primary"
+              disabled={!newRemoteName.trim() || !newRemoteUrl.trim()}
+              onClick={() => {
+                const id = newRemoteName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+                const instance = { id, name: newRemoteName.trim(), url: newRemoteUrl.trim(), token: newRemoteToken.trim() };
+                setSettings({ ...settings, remoteInstances: [...(settings.remoteInstances || []), instance] });
+                setNewRemoteName("");
+                setNewRemoteUrl("");
+                setNewRemoteToken("");
+              }}
+            >
+              Add Instance
+            </button>
+          </div>
+          <p className="hint" style={{ marginTop: 8, fontSize: 11 }}>
+            Instances are saved when you click "Save Settings". Use the Test button after saving to verify connectivity.
+          </p>
+        </section></>)}
+
+        <section className="card">
           <h3>MCP Servers</h3>
           <p className="hint" style={{ marginBottom: 12 }}>
             Configure MCP servers as JSON. Supports type: "http", "sse", "stdio" (default: auto-detect). Add custom headers for authentication.
@@ -1056,408 +1343,6 @@ export default function SettingsPage() {
                 ))}
               </div>
             </details>
-          )}
-        </section>
-
-        <section className="card">
-          <h3>Cloudflare Tunnel</h3>
-          <p className="hint" style={{ marginBottom: 12 }}>
-            Expose this Tiger Cowork instance to the internet so remote machines can connect — even behind NAT, firewall, or VM.
-            <code>cloudflared</code> will be auto-installed if not found.
-          </p>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-            {/* Status indicator */}
-            <span style={{
-              width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
-              background: tunnelStatus === "running" ? "#34a853" : tunnelStatus === "starting" || tunnelStatus === "installing" ? "#f9ab00" : tunnelStatus === "error" ? "#ea4335" : "#607d8b",
-            }} />
-            <span style={{ fontSize: 13, fontWeight: 600 }}>
-              {tunnelStatus === "running" ? "Running" : tunnelStatus === "installing" ? "Installing cloudflared..." : tunnelStatus === "starting" ? "Starting..." : tunnelStatus === "error" ? "Error" : "Stopped"}
-            </span>
-
-            {tunnelStatus === "stopped" || tunnelStatus === "error" ? (
-              <button
-                className="btn btn-primary btn-sm"
-                disabled={tunnelLoading}
-                onClick={async () => {
-                  setTunnelLoading(true);
-                  setTunnelError(null);
-                  setTunnelStatus("starting");
-                  try {
-                    const res = await api.startTunnel();
-                    if (res.ok) {
-                      setTunnelStatus("running");
-                      setTunnelUrl(res.url || null);
-                    } else {
-                      setTunnelStatus("error");
-                      setTunnelError(res.error || "Failed to start tunnel");
-                    }
-                  } catch (err: any) {
-                    setTunnelStatus("error");
-                    setTunnelError(err.message);
-                  }
-                  setTunnelLoading(false);
-                }}
-              >
-                {tunnelLoading ? "Starting (may install cloudflared)..." : "Enable Tunnel"}
-              </button>
-            ) : (
-              <button
-                className="btn btn-danger btn-sm"
-                onClick={async () => {
-                  await api.stopTunnel();
-                  setTunnelStatus("stopped");
-                  setTunnelUrl(null);
-                  setTunnelError(null);
-                }}
-              >
-                Disable Tunnel
-              </button>
-            )}
-          </div>
-
-          {tunnelUrl && (
-            <div style={{ background: "var(--bg-secondary, #1a1a2e)", border: "1px solid var(--border)", borderRadius: 6, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
-              <code style={{ flex: 1, fontSize: 13, fontFamily: "monospace", color: "#34a853", wordBreak: "break-all" }}>
-                {tunnelUrl}
-              </code>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={(e) => {
-                  e.preventDefault();
-                  try {
-                    if (navigator.clipboard && window.isSecureContext) {
-                      navigator.clipboard.writeText(tunnelUrl!);
-                    } else {
-                      const ta = document.createElement("textarea");
-                      ta.value = tunnelUrl!;
-                      ta.style.position = "fixed";
-                      ta.style.opacity = "0";
-                      document.body.appendChild(ta);
-                      ta.select();
-                      document.execCommand("copy");
-                      document.body.removeChild(ta);
-                    }
-                    setCopiedTunnelUrl(true);
-                    setTimeout(() => setCopiedTunnelUrl(false), 2000);
-                  } catch { /* ignore */ }
-                }}
-              >
-                {copiedTunnelUrl ? "Copied!" : "Copy URL"}
-              </button>
-            </div>
-          )}
-          {tunnelUrl && (
-            <p className="hint" style={{ marginTop: 6 }}>
-              Use this URL as the remote instance URL on other machines. The URL changes each restart unless you set up a named tunnel.
-            </p>
-          )}
-
-          {tunnelError && (
-            <p style={{ color: "#ea4335", fontSize: 12, marginTop: 8 }}>{tunnelError}</p>
-          )}
-
-          {tunnelStatus === "stopped" && !tunnelError && (
-            <p className="hint" style={{ marginTop: 4 }}>
-              Tunnel is off. Your instance is only reachable on the local network. Enable it to allow remote machines to connect through the internet.
-            </p>
-          )}
-        </section>
-
-        <section className="card">
-          <h3>Remote Bridge Tokens</h3>
-          <p className="hint" style={{ marginBottom: 12 }}>
-            Generate tokens that <strong>other machines</strong> use to connect to <em>this</em> instance. Share these tokens (not your ACCESS_TOKEN) with remote peers.
-          </p>
-
-          {bridgeTokens.map((bt) => (
-            <div key={bt.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <strong>{bt.name}</strong>
-                <span style={{ flex: 1 }} />
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={(e) => { e.preventDefault(); setShowBridgeTokenId(showBridgeTokenId === bt.id ? null : bt.id); }}
-                >
-                  {showBridgeTokenId === bt.id ? "Hide Token" : "Show Token"}
-                </button>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={async (e) => {
-                    e.preventDefault();
-                    if (!window.confirm(`Regenerate "${bt.name}"? Old token stops working.`)) return;
-                    try {
-                      const updated = await api.regenerateRemoteBridgeToken(bt.id);
-                      setBridgeTokens((prev) => prev.map((t) => (t.id === bt.id ? updated : t)));
-                    } catch (err) { console.error("Regenerate failed:", err); }
-                  }}
-                >
-                  Regenerate
-                </button>
-                <button
-                  className="btn btn-danger btn-sm"
-                  onClick={async (e) => {
-                    e.preventDefault();
-                    if (!window.confirm(`Delete "${bt.name}"? Remotes using it lose access.`)) return;
-                    try {
-                      await api.deleteRemoteBridgeToken(bt.id);
-                      setBridgeTokens((prev) => prev.filter((t) => t.id !== bt.id));
-                    } catch (err) { console.error("Delete failed:", err); }
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-              {showBridgeTokenId === bt.id && (
-                <div style={{ marginTop: 8, background: "var(--bg-secondary, #1a1a2e)", border: "1px solid var(--border)", borderRadius: 6, padding: "8px 12px", display: "flex", alignItems: "center", gap: 8 }}>
-                  <code style={{ flex: 1, fontFamily: "monospace", fontSize: 12, wordBreak: "break-all", userSelect: "all" }}>
-                    {bt.token}
-                  </code>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      try {
-                        if (navigator.clipboard && window.isSecureContext) {
-                          navigator.clipboard.writeText(bt.token);
-                        } else {
-                          const ta = document.createElement("textarea");
-                          ta.value = bt.token;
-                          ta.style.position = "fixed";
-                          ta.style.opacity = "0";
-                          document.body.appendChild(ta);
-                          ta.select();
-                          document.execCommand("copy");
-                          document.body.removeChild(ta);
-                        }
-                        setCopiedBridgeTokenId(bt.id);
-                        setTimeout(() => setCopiedBridgeTokenId(null), 2000);
-                      } catch { /* ignore */ }
-                    }}
-                  >
-                    {copiedBridgeTokenId === bt.id ? "Copied!" : "Copy"}
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-          {bridgeTokens.length === 0 && (
-            <p style={{ fontSize: 13, opacity: 0.5, margin: "8px 0" }}>No bridge tokens yet. Generate one and share it with remote machines.</p>
-          )}
-
-          <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
-            <input
-              placeholder="Token name (e.g. Cloud PC, Home PC)"
-              value={newBridgeTokenName}
-              onChange={(e) => setNewBridgeTokenName(e.target.value)}
-              onKeyDown={async (e) => {
-                if (e.key === "Enter") {
-                  const token = await api.createRemoteBridgeToken(newBridgeTokenName || `Bridge Token ${bridgeTokens.length + 1}`);
-                  setBridgeTokens([...bridgeTokens, token]);
-                  setNewBridgeTokenName("");
-                }
-              }}
-              style={{ width: 220 }}
-            />
-            <button
-              className="btn btn-primary"
-              onClick={async () => {
-                const token = await api.createRemoteBridgeToken(newBridgeTokenName || `Bridge Token ${bridgeTokens.length + 1}`);
-                setBridgeTokens([...bridgeTokens, token]);
-                setNewBridgeTokenName("");
-              }}
-            >
-              Generate Token
-            </button>
-          </div>
-        </section>
-
-        <section className="card">
-          <h3>Remote Instances</h3>
-          <p className="hint" style={{ marginBottom: 12 }}>
-            Connect to Tiger Cowork on <strong>other machines</strong>. Use their <em>Bridge Token</em> or ACCESS_TOKEN to authenticate. Test works immediately — click Save to persist.
-          </p>
-
-          {/* Existing instances */}
-          {(settings.remoteInstances || []).map((inst: any) => (
-            <div key={inst.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <strong style={{ minWidth: 100 }}>{inst.name}</strong>
-                <span style={{ flex: 1, opacity: 0.7, fontFamily: "monospace", fontSize: 12 }}>{inst.url}</span>
-                <span style={{ opacity: 0.5, fontFamily: "monospace", fontSize: 11, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>{inst.token}</span>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  disabled={remoteTesting === inst.id}
-                  onClick={async () => {
-                    setRemoteTesting(inst.id);
-                    setRemoteTestResults((prev) => ({ ...prev, [inst.id]: null }));
-                    try {
-                      const res = await api.testRemoteInstance({ id: inst.id, url: inst.url, token: inst.token });
-                      setRemoteTestResults((prev) => ({ ...prev, [inst.id]: res }));
-                    } catch (err: any) {
-                      setRemoteTestResults((prev) => ({ ...prev, [inst.id]: { ok: false, message: err.message } }));
-                    }
-                    setRemoteTesting(null);
-                  }}
-                >
-                  {remoteTesting === inst.id ? "Testing..." : "Test"}
-                </button>
-                {remoteTestResults[inst.id] && (
-                  <span style={{ fontSize: 11, color: remoteTestResults[inst.id]!.ok ? "#34a853" : "#ea4335" }}>
-                    {remoteTestResults[inst.id]!.ok ? "\u2713" : "\u2717"} {(remoteTestResults[inst.id]!.message || "").slice(0, 40)}
-                  </span>
-                )}
-                <button
-                  className="btn btn-danger btn-sm"
-                  onClick={() => {
-                    const updated = (settings.remoteInstances || []).filter((i: any) => i.id !== inst.id);
-                    setSettings((prev: any) => ({ ...prev, remoteInstances: updated }));
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 10, opacity: 0.5 }}>Persona (who is this agent?)</label>
-                  <input
-                    style={{ width: "100%", fontSize: 12, marginTop: 2 }}
-                    placeholder="e.g. Senior Python developer with GPU access"
-                    value={inst.persona || ""}
-                    onChange={(e) => {
-                      const updated = (settings.remoteInstances || []).map((i: any) =>
-                        i.id === inst.id ? { ...i, persona: e.target.value } : i
-                      );
-                      setSettings((prev: any) => ({ ...prev, remoteInstances: updated }));
-                    }}
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 10, opacity: 0.5 }}>Responsibility (what tasks to send here?)</label>
-                  <input
-                    style={{ width: "100%", fontSize: 12, marginTop: 2 }}
-                    placeholder="e.g. ML training, image generation, heavy computation"
-                    value={inst.responsibility || ""}
-                    onChange={(e) => {
-                      const updated = (settings.remoteInstances || []).map((i: any) =>
-                        i.id === inst.id ? { ...i, responsibility: e.target.value } : i
-                      );
-                      setSettings((prev: any) => ({ ...prev, remoteInstances: updated }));
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          ))}
-          {(settings.remoteInstances || []).length === 0 && (
-            <p style={{ fontSize: 13, opacity: 0.5, margin: "8px 0" }}>No remote instances configured yet.</p>
-          )}
-
-          {/* Add new instance */}
-          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <label style={{ fontSize: 11, fontWeight: 600 }}>Name</label>
-              <input
-                style={{ width: 120 }}
-                placeholder="e.g. cloud-pc"
-                value={newRemoteName}
-                onChange={(e) => setNewRemoteName(e.target.value)}
-              />
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <label style={{ fontSize: 11, fontWeight: 600 }}>URL</label>
-              <input
-                style={{ width: 220 }}
-                placeholder="http://192.168.1.x:3001"
-                value={newRemoteUrl}
-                onChange={(e) => setNewRemoteUrl(e.target.value)}
-              />
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <label style={{ fontSize: 11, fontWeight: 600 }}>Bridge Token</label>
-              <input
-                type="password"
-                style={{ width: 180 }}
-                placeholder="rtk_... (from remote machine)"
-                value={newRemoteToken}
-                onChange={(e) => setNewRemoteToken(e.target.value)}
-              />
-            </div>
-            <button
-              className="btn btn-primary btn-sm"
-              disabled={!newRemoteName.trim() || !newRemoteUrl.trim() || !newRemoteToken.trim()}
-              onClick={() => {
-                const newInst = {
-                  id: newRemoteName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-"),
-                  name: newRemoteName.trim(),
-                  url: newRemoteUrl.trim().replace(/\/$/, ""),
-                  token: newRemoteToken.trim(),
-                };
-                const existing = settings.remoteInstances || [];
-                setSettings((prev: any) => ({ ...prev, remoteInstances: [...existing, newInst] }));
-                setNewRemoteName("");
-                setNewRemoteUrl("");
-                setNewRemoteToken("");
-              }}
-            >
-              Add Instance
-            </button>
-          </div>
-          <p className="hint" style={{ marginTop: 8 }}>
-            Changes are saved when you click the global Save button.
-          </p>
-
-          {/* Remote Agent Timeouts */}
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-            <label style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, display: "block" }}>Remote Agent Timeouts</label>
-            <p className="hint" style={{ marginBottom: 12 }}>
-              Controls how long to wait when delegating tasks to remote instances.
-            </p>
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <div className="form-group" style={{ flex: 1, minWidth: 140 }}>
-                <label>Poll Interval (seconds)</label>
-                <input type="number" value={settings.remotePollInterval ?? 2} onChange={(e) => setSettings({ ...settings, remotePollInterval: Math.min(30, Math.max(1, parseInt(e.target.value) || 2)) })} min={1} max={30} step={1} />
-                <p className="hint">How often to check remote agent status (default: 2s)</p>
-              </div>
-              <div className="form-group" style={{ flex: 1, minWidth: 140 }}>
-                <label>Idle Timeout (seconds)</label>
-                <input type="number" value={settings.remoteIdleTimeout ?? 60} onChange={(e) => setSettings({ ...settings, remoteIdleTimeout: Math.min(600, Math.max(10, parseInt(e.target.value) || 60)) })} min={10} max={600} step={10} />
-                <p className="hint">Abort if no new progress for this long (default: 60s)</p>
-              </div>
-              <div className="form-group" style={{ flex: 1, minWidth: 140 }}>
-                <label>Max Timeout (seconds)</label>
-                <input type="number" value={settings.remoteMaxTimeout ?? 1800} onChange={(e) => setSettings({ ...settings, remoteMaxTimeout: Math.min(7200, Math.max(60, parseInt(e.target.value) || 1800)) })} min={60} max={7200} step={60} />
-                <p className="hint">Hard cap regardless of activity (default: 1800s / 30 min)</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Task Auto-Cleanup */}
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-            <label style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, display: "block" }}>Task Auto-Cleanup</label>
-            <div className="form-group" style={{ maxWidth: 300 }}>
-              <label>Max Task Age (minutes)</label>
-              <input type="number" value={settings.staleTaskMaxAge ?? 0} onChange={(e) => setSettings({ ...settings, staleTaskMaxAge: Math.max(0, parseInt(e.target.value) || 0) })} min={0} step={10} />
-              <p className="hint">Auto-kill tasks running longer than this. Set to 0 to disable (default: 0 — no limit).</p>
-            </div>
-          </div>
-        </section>
-
-        <section className="card">
-          <h3>Terminal</h3>
-          <p className="hint" style={{ marginBottom: 12 }}>
-            Connect to the sandbox terminal to install packages, configure services, or debug inside the Ubuntu VM. Runs as root.
-          </p>
-
-          {!terminalOpen ? (
-            <button className="btn btn-primary" onClick={() => setTerminalOpen(true)}>
-              Open Terminal
-            </button>
-          ) : (
-            <Suspense fallback={<div style={{ padding: 20, color: "var(--text-secondary)" }}>Loading terminal...</div>}>
-              <TerminalComponent onClose={() => setTerminalOpen(false)} />
-            </Suspense>
           )}
         </section>
       </div>

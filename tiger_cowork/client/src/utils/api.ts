@@ -45,8 +45,6 @@ export const api = {
   // Chat
   getSessions: () => request("/chat/sessions"),
   getSession: (id: string) => request(`/chat/sessions/${id}`),
-  getActivityLog: (id: string) => request(`/chat/sessions/${id}/activity`),
-  getChatLog: (id: string) => request(`/chat/sessions/${id}/chatlog`),
   createSession: (title?: string) => request("/chat/sessions", { method: "POST", body: JSON.stringify({ title }) }),
   deleteSession: (id: string) => request(`/chat/sessions/${id}`, { method: "DELETE" }),
   renameSession: (id: string, title: string) => request(`/chat/sessions/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
@@ -75,11 +73,6 @@ export const api = {
     return res.json();
   },
 
-  // Shared Folders
-  getSharedFolders: () => request("/files/shared-folders"),
-  connectFolder: (hostPath: string, name?: string) => request("/files/shared-folders", { method: "POST", body: JSON.stringify({ hostPath, name }) }),
-  disconnectFolder: (name: string) => request(`/files/shared-folders?name=${encodeURIComponent(name)}`, { method: "DELETE" }),
-
   // Python
   runPython: (code: string) => request("/python/run", { method: "POST", body: JSON.stringify({ code }) }),
 
@@ -87,6 +80,8 @@ export const api = {
   getTasks: () => request("/tasks"),
   getActiveTasks: () => request("/tasks/active"),
   getFinishedTasks: () => request("/tasks/finished"),
+  getRemoteTasks: () => request("/remote/tasks"),
+  killRemoteTask: (id: string) => request(`/remote/task/${id}/kill`, { method: "POST" }),
   killActiveTask: (id: string) => request(`/tasks/active/${id}/kill`, { method: "POST" }),
   createTask: (data: any) => request("/tasks", { method: "POST", body: JSON.stringify(data) }),
   updateTask: (id: string, data: any) => request(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
@@ -174,26 +169,23 @@ export const api = {
   deleteFileToken: (id: string) => request(`/settings/file-tokens/${id}`, { method: "DELETE" }),
   regenerateFileToken: (id: string) => request(`/settings/file-tokens/${id}/regenerate`, { method: "POST" }),
 
-  // Cloudflare Tunnel
-  getTunnelStatus: () => request("/settings/tunnel/status"),
-  startTunnel: () => request("/settings/tunnel/start", { method: "POST" }),
-  stopTunnel: () => request("/settings/tunnel/stop", { method: "POST" }),
+  // Remote Token (this machine's token for incoming remote connections)
+  getRemoteToken: () => request("/settings/remote-token"),
+  regenerateRemoteToken: () => request("/settings/remote-token/regenerate", { method: "POST" }),
 
-  // Remote Bridge Tokens (tokens this machine generates for others to connect)
-  getRemoteBridgeTokens: () => request("/settings/remote-bridge-tokens"),
-  createRemoteBridgeToken: (name: string) => request("/settings/remote-bridge-tokens", { method: "POST", body: JSON.stringify({ name }) }),
-  deleteRemoteBridgeToken: (id: string) => request(`/settings/remote-bridge-tokens/${id}`, { method: "DELETE" }),
-  regenerateRemoteBridgeToken: (id: string) => request(`/settings/remote-bridge-tokens/${id}/regenerate`, { method: "POST" }),
-
-  // Remote Instances (other machines this machine connects to)
-  testRemoteInstance: (data: { id?: string; url?: string; token?: string }) =>
-    request("/settings/remote-instances/test", { method: "POST", body: JSON.stringify(data) }),
+  // Remote Instances
+  testRemoteInstance: (id: string) =>
+    request("/settings/remote-instances/test", { method: "POST", body: JSON.stringify({ id }) }),
 
   // MCP
   mcpStatus: () => request("/settings/mcp/status"),
   mcpConnect: (name: string, url: string, type?: string, headers?: Record<string, string>) => request("/settings/mcp/connect", { method: "POST", body: JSON.stringify({ name, url, type, headers }) }),
   mcpDisconnect: (name: string) => request("/settings/mcp/disconnect", { method: "POST", body: JSON.stringify({ name }) }),
   mcpReconnectAll: () => request("/settings/mcp/reconnect-all", { method: "POST" }),
+
+  // Activity log
+  getActivityLog: (id: string) => request(`/chat/sessions/${id}/activity`),
+  getChatLog: (id: string) => request(`/chat/sessions/${id}/chatlog`),
 
   // Agent configs
   getAgentConfigs: () => request("/agents"),
@@ -206,6 +198,4 @@ export const api = {
   generateAgentDefinition: (description: string) => request("/agents/generate-definition", { method: "POST", body: JSON.stringify({ description }) }),
   generateAgentSystem: (description: string, architectureType?: string, agentCount?: string) =>
     request("/agents/generate-system", { method: "POST", body: JSON.stringify({ description, architectureType, agentCount }) }),
-  generateAgentDescription: (system: any, prompt?: string) =>
-    request("/agents/generate-description", { method: "POST", body: JSON.stringify({ system, prompt }) }),
 };

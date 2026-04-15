@@ -1,8 +1,7 @@
 import { FastifyInstance } from "fastify";
-import { getSettings, saveSettings, getFileTokens, saveFileTokens, generateToken, getRemoteBridgeTokens, saveRemoteBridgeTokens } from "../services/data";
+import { getSettings, saveSettings, getFileTokens, saveFileTokens, generateToken } from "../services/data";
 import { connectServer, disconnectServer, getMcpStatus, initMcpServers } from "../services/mcp";
-import { testRemoteInstance as testRemote } from "../services/remote";
-import { getTunnelState, startTunnel, stopTunnel } from "../services/tunnel";
+import { remoteTask } from "../services/remote";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -27,15 +26,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         masked[key] = masked[key].slice(0, 8) + "..." + masked[key].slice(-4);
       }
     }
-    // Mask remote instance tokens
-    if (masked.remoteInstances && Array.isArray(masked.remoteInstances)) {
-      masked.remoteInstances = masked.remoteInstances.map((inst: any) => ({
-        ...inst,
-        token: inst.token && inst.token.length > 12
-          ? inst.token.slice(0, 8) + "..." + inst.token.slice(-4)
-          : inst.token,
-      }));
-    }
     // Mask MCP server header values that look sensitive (Authorization, API keys, etc.)
     if (masked.mcpTools && Array.isArray(masked.mcpTools)) {
       masked.mcpTools = masked.mcpTools.map((tool: any) => {
@@ -50,6 +40,19 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         }
         return { ...tool, headers: maskedHeaders };
       });
+    }
+    // Mask the remote token
+    if (masked.remoteToken) {
+      masked.remoteToken = masked.remoteToken.slice(0, 8) + "..." + masked.remoteToken.slice(-4);
+    }
+    // Mask remote instance tokens
+    if (masked.remoteInstances && Array.isArray(masked.remoteInstances)) {
+      masked.remoteInstances = masked.remoteInstances.map((ri: any) => ({
+        ...ri,
+        token: ri.token && ri.token.length > 12
+          ? ri.token.slice(0, 8) + "..." + ri.token.slice(-4)
+          : ri.token,
+      }));
     }
     return masked;
   });
@@ -74,14 +77,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         updated[key] = (current as any)[key];
       }
     }
-    // Don't overwrite remote instance tokens with masked values
-    if (body.remoteInstances && Array.isArray(body.remoteInstances) && current.remoteInstances && Array.isArray(current.remoteInstances)) {
-      updated.remoteInstances = body.remoteInstances.map((inst: any) => {
-        if (!inst.token?.includes("...")) return inst;
-        const current_ = current.remoteInstances!.find((c: any) => c.id === inst.id);
-        return current_ ? { ...inst, token: current_.token } : inst;
-      });
-    }
     // Don't overwrite MCP header values with masked values
     if (body.mcpTools && Array.isArray(body.mcpTools) && current.mcpTools && Array.isArray(current.mcpTools)) {
       updated.mcpTools = body.mcpTools.map((tool: any) => {
@@ -100,6 +95,20 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         return { ...tool, headers: restored };
       });
     }
+    // Don't overwrite remote token with masked value
+    if (body.remoteToken?.includes("...")) {
+      updated.remoteToken = current.remoteToken;
+    }
+    // Don't overwrite remote instance tokens with masked values
+    if (body.remoteInstances && Array.isArray(body.remoteInstances) && current.remoteInstances && Array.isArray(current.remoteInstances)) {
+      updated.remoteInstances = body.remoteInstances.map((ri: any) => {
+        if (ri.token?.includes("...")) {
+          const orig = current.remoteInstances!.find((o: any) => o.id === ri.id);
+          return orig ? { ...ri, token: orig.token } : ri;
+        }
+        return ri;
+      });
+    }
     await saveSettings(updated);
     return { success: true };
   });
@@ -108,30 +117,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   fastify.post("/test-connection", async (request, reply) => {
     const { apiKey, apiUrl, model, provider } = request.body as any;
     try {
-      const isLocal = provider === "ollama_local" || provider === "lmstudio_local" || provider === "openai_local" || (apiUrl && apiUrl.includes("host.local"));
       const isAnthropic = provider === "anthropic_claude_code" || (apiUrl && apiUrl.includes("api.anthropic.com"));
-      if (isLocal) {
-        // Local models — no API key needed, just test the connection
-        const rawUrl = apiUrl || "http://host.local:11434/v1";
-        const url = rawUrl.endsWith("/chat/completions") ? rawUrl : rawUrl.replace(/\/$/, "") + "/chat/completions";
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-        const response = await fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            model: model || "llama3.2",
-            messages: [{ role: "user", content: "Hello" }],
-            max_tokens: 10,
-          }),
-        });
-        if (response.ok) {
-          return { success: true, message: `Connected to local model (${model})` };
-        } else {
-          const err = await response.text();
-          return { success: false, message: `Local server error ${response.status}: ${err}` };
-        }
-      } else if (isAnthropic) {
+      if (isAnthropic) {
         const url = (apiUrl || "https://api.anthropic.com/v1").replace(/\/$/, "").replace(/\/messages$/, "") + "/messages";
         // OAuth tokens (sk-ant-oat01-) use Bearer; API keys (sk-ant-api) use x-api-key
         const isOAuthToken = apiKey?.startsWith("sk-ant-oat01-");
@@ -160,19 +147,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       } else {
         const rawUrl = apiUrl || "https://api.tigerbot.com/bot-chat/openai/v1/chat/completions";
         const url = rawUrl.endsWith("/chat/completions") ? rawUrl : rawUrl.replace(/\/$/, "") + "/chat/completions";
-        const isKimi = rawUrl.includes("api.kimi.com") || rawUrl.includes("kimi.moonshot");
-        const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
-        if (isKimi) {
-          headers["User-Agent"] = "claude-code/1.0";
-          headers["X-Client-Name"] = "claude-code";
-        }
+        const isKimi = provider === "kimi" || rawUrl.includes("api.kimi.com");
+        const kimiHeaders: Record<string, string> = isKimi
+          ? { "User-Agent": "claude-code/1.0", "X-Client-Name": "claude-code" }
+          : {};
         const response = await fetch(url, {
           method: "POST",
-          headers,
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, ...kimiHeaders },
           body: JSON.stringify({
             model: model || "TigerBot-70B-Chat",
             messages: [{ role: "user", content: "Hello" }],
-            max_tokens: 200,
+            max_tokens: 10,
           }),
         });
         if (response.ok) {
@@ -184,6 +169,43 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       }
     } catch (err: any) {
       return { success: false, message: err.message };
+    }
+  });
+
+  // --- Remote Token (this machine's token for incoming remote connections) ---
+
+  fastify.get("/remote-token", async (request, reply) => {
+    const settings = await getSettings();
+    if (!settings.remoteToken) {
+      // Auto-generate on first access
+      settings.remoteToken = generateToken();
+      await saveSettings(settings);
+    }
+    return { token: settings.remoteToken };
+  });
+
+  fastify.post("/remote-token/regenerate", async (request, reply) => {
+    const settings = await getSettings();
+    settings.remoteToken = generateToken();
+    await saveSettings(settings);
+    return { token: settings.remoteToken };
+  });
+
+  // --- Remote Instance Test ---
+  fastify.post("/remote-instances/test", async (request, reply) => {
+    const { id } = request.body as any;
+    if (!id) { reply.code(400); return { error: "id is required" }; }
+    const settings = await getSettings();
+    const instance = settings.remoteInstances?.find((ri) => ri.id === id);
+    if (!instance) { reply.code(404); return { ok: false, message: `Remote instance "${id}" not found` }; }
+    try {
+      const result = await remoteTask(instance, "Hello, reply with just pong", {
+        idleTimeoutMs: 15_000,
+        maxTimeoutMs: 30_000,
+      });
+      return { ok: result.ok, message: result.ok ? result.result : result.error };
+    } catch (err: any) {
+      return { ok: false, message: err.message };
     }
   });
 
@@ -278,105 +300,5 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   fastify.post("/mcp/reconnect-all", async (request, reply) => {
     await initMcpServers();
     return { ok: true, status: getMcpStatus() };
-  });
-
-  // --- Cloudflare Tunnel ---
-
-  fastify.get("/tunnel/status", async (request, reply) => {
-    return getTunnelState();
-  });
-
-  fastify.post("/tunnel/start", async (request, reply) => {
-    // Save enabled state
-    const settings = await getSettings();
-    settings.tunnelEnabled = true;
-    await saveSettings(settings);
-
-    const port = Number(process.env.PORT) || 3001;
-    const result = await startTunnel(port);
-    return result;
-  });
-
-  fastify.post("/tunnel/stop", async (request, reply) => {
-    // Save disabled state
-    const settings = await getSettings();
-    settings.tunnelEnabled = false;
-    settings.tunnelUrl = null;
-    await saveSettings(settings);
-
-    return stopTunnel();
-  });
-
-  // --- Remote Token (lightweight ping endpoint for connectivity tests) ---
-
-  fastify.get("/remote-token", async (request, reply) => {
-    // Returns a simple response to confirm the instance is reachable and auth is valid.
-    // Used by testRemoteInstance() on other machines.
-    const tokens = await getRemoteBridgeTokens();
-    const firstToken = tokens.length > 0 ? tokens[0].token : null;
-    return { token: firstToken || "no-bridge-tokens" };
-  });
-
-  // --- Remote Bridge Tokens (this machine's tokens that other machines use to connect) ---
-
-  fastify.get("/remote-bridge-tokens", async (request, reply) => {
-    return await getRemoteBridgeTokens();
-  });
-
-  fastify.post("/remote-bridge-tokens", async (request, reply) => {
-    const { name } = request.body as any;
-    const tokens = await getRemoteBridgeTokens();
-    const prefix = "rtk_";
-    const newToken = {
-      id: Date.now().toString(36),
-      name: name || `Bridge Token ${tokens.length + 1}`,
-      token: prefix + generateToken(),
-      createdAt: new Date().toISOString(),
-    };
-    tokens.push(newToken);
-    await saveRemoteBridgeTokens(tokens);
-    return newToken;
-  });
-
-  fastify.delete("/remote-bridge-tokens/:id", async (request, reply) => {
-    let tokens = await getRemoteBridgeTokens();
-    tokens = tokens.filter((t) => t.id !== (request.params as any).id);
-    await saveRemoteBridgeTokens(tokens);
-    return { success: true };
-  });
-
-  fastify.post("/remote-bridge-tokens/:id/regenerate", async (request, reply) => {
-    const tokens = await getRemoteBridgeTokens();
-    const token = tokens.find((t) => t.id === (request.params as any).id);
-    if (!token) { reply.code(404); return { error: "Token not found" }; }
-    token.token = "rtk_" + generateToken();
-    await saveRemoteBridgeTokens(tokens);
-    return token;
-  });
-
-  // --- Remote Instances ---
-
-  fastify.post("/remote-instances/test", async (request, reply) => {
-    const { id, url, token } = request.body as any;
-    let instance;
-
-    // Allow inline url+token for testing before save
-    if (url && token && !token.includes("...")) {
-      instance = { id: id || "test", name: "test", url: url.replace(/\/$/, ""), token };
-    } else if (id || (url && token?.includes("..."))) {
-      // Token is masked — look up the real token from saved settings
-      const settings = await getSettings();
-      const saved = (settings.remoteInstances || []).find((i: any) => i.id === id || i.url === url);
-      if (saved) {
-        instance = { ...saved, url: url || saved.url };
-      }
-    }
-
-    if (!instance) { reply.code(404); return { ok: false, message: "Instance not found. Save settings first or provide url+token." }; }
-    try {
-      return await testRemote(instance);
-    } catch (err: any) {
-      return { ok: false, message: err.message };
-    }
   });
 }

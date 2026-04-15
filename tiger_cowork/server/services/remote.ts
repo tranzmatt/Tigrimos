@@ -23,7 +23,7 @@ export async function remoteTask(
     timeoutMs?: number;
     signal?: AbortSignal;
     /** Called whenever new progress entries arrive from the remote server */
-    onProgress?: (newEntries: string[]) => void;
+    onProgress?: (newEntry: string) => void;
   }
 ): Promise<RemoteTaskResult> {
   const pollInterval = opts?.pollIntervalMs ?? 2000;
@@ -53,6 +53,7 @@ export async function remoteTask(
     const submitData = await submitRes.json();
     taskId = submitData.taskId;
     sessionId = submitData.sessionId;
+    console.log(`[Remote] Task ${taskId} submitted to ${instance.name} (${baseUrl})`);
   } catch (err: any) {
     return { ok: false, error: `Network error submitting task: ${err.message}` };
   }
@@ -61,6 +62,7 @@ export async function remoteTask(
   const hardDeadline = Date.now() + maxTimeout;
   let lastActivityAt = Date.now();
   let lastProgressCount = 0;
+  let lastProgressSeq = 0;
 
   while (true) {
     if (signal?.aborted) {
@@ -81,15 +83,22 @@ export async function remoteTask(
 
       const pollData = await pollRes.json();
       const progress: string[] = pollData.progress || [];
+      const progressSeq: number = typeof pollData.progressSeq === "number" ? pollData.progressSeq : progress.length;
 
-      // Activity check — any new progress resets the idle clock
-      if (progress.length > lastProgressCount) {
-        // Forward new progress entries to the caller
+      // Activity check — monotonic progressSeq is authoritative. The server
+      // trims `progress` in memory, so its length can regress; progressSeq
+      // only ever increases.
+      if (progressSeq > lastProgressSeq) {
         if (opts?.onProgress) {
-          const newEntries = progress.slice(lastProgressCount);
-          opts.onProgress(newEntries);
+          // Forward any newly visible entries. Because `progress` may have
+          // been trimmed, we can only emit what's currently present beyond
+          // the last count we saw — good enough for progress display.
+          for (let i = lastProgressCount; i < progress.length; i++) {
+            opts.onProgress(progress[i]);
+          }
         }
         lastActivityAt = Date.now();
+        lastProgressSeq = progressSeq;
         lastProgressCount = progress.length;
       }
 
@@ -99,6 +108,7 @@ export async function remoteTask(
       }
 
       if (pollData.status === "completed") {
+        console.log(`[Remote] Task ${taskId} completed on ${instance.name}`);
         return { ok: true, result: pollData.result, sessionId: pollData.sessionId };
       }
 
@@ -116,7 +126,6 @@ export async function remoteTask(
 
 /**
  * Test connectivity to a remote instance by checking GET /api/settings/remote-token.
- * This is a lightweight authenticated endpoint — if it responds, the remote is reachable and the token is valid.
  */
 export async function testRemoteInstance(instance: RemoteInstance): Promise<{ ok: boolean; message: string }> {
   const baseUrl = instance.url.replace(/\/$/, "");

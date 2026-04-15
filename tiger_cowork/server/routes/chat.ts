@@ -4,8 +4,8 @@ import { getChatHistory, saveChatHistory, ChatSession, deleteAgentHistory } from
 import { callTigerBot } from "../services/tigerbot";
 import { getAutoCreatedArchitecture } from "../services/toolbox";
 import yaml from "js-yaml";
-import fs from "fs";
 import path from "path";
+import fs from "fs";
 
 const ACTIVITY_LOG_DIR = path.resolve("data", "activity_logs");
 const CHAT_LOG_DIR = path.resolve("data", "chat_logs");
@@ -23,7 +23,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // Get full chat log for a session (user messages, tool calls, agent reasoning, responses)
+  // Get chat log for a session
   fastify.get("/sessions/:id/chatlog", async (request, reply) => {
     const sessionId = (request.params as any).id;
     const logPath = path.join(CHAT_LOG_DIR, `${sessionId}.log`);
@@ -32,21 +32,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
       return { ok: true, content };
     } catch {
       return { ok: true, content: "" };
-    }
-  });
-
-  // Export chat log as downloadable file
-  fastify.get("/sessions/:id/chatlog/export", async (request, reply) => {
-    const sessionId = (request.params as any).id;
-    const logPath = path.join(CHAT_LOG_DIR, `${sessionId}.log`);
-    try {
-      const content = fs.readFileSync(logPath, "utf-8");
-      reply.header("Content-Type", "text/plain; charset=utf-8");
-      reply.header("Content-Disposition", `attachment; filename="chatlog-${sessionId}.log"`);
-      return content;
-    } catch {
-      reply.code(404);
-      return { error: "No chat log for this session" };
     }
   });
 

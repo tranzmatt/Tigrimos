@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo, lazy, Suspense } from "react";
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -38,11 +38,6 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-}
-
-function isImageFile(name: string): boolean {
-  const ext = name.split(".").pop()?.toLowerCase() || "";
-  return ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext);
 }
 
 function getFileIcon(name: string): string {
@@ -276,85 +271,6 @@ function OutputCanvas({ files }: { files: string[] }) {
   );
 }
 
-// Memoized single message — prevents re-parsing markdown when streaming/status changes
-const MessageItem = memo(({ msg, onOpenOutput }: { msg: Message; onOpenOutput: () => void }) => (
-  <div className={`message ${msg.role}`}>
-    <div className="message-avatar">{msg.role === "user" ? "U" : "C"}</div>
-    <div className="message-content">
-      {msg.role === "assistant" ? (
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{msg.content}</ReactMarkdown>
-      ) : (
-        <>
-          {msg.attachments && msg.attachments.length > 0 && (
-            <div className="message-attachments">
-              {msg.attachments.map((f, j) => (
-                <div key={j} className="attachment-item">
-                  {isImageFile(f.name) ? (
-                    <img src={sandboxUrl(f.path)} alt={f.name} className="attachment-image-preview" />
-                  ) : (
-                    <div className="attachment-icon">{getFileIcon(f.name)}</div>
-                  )}
-                  <div className="attachment-info">
-                    <span className="attachment-name">{f.name}</span>
-                    <span className="attachment-size">{formatFileSize(f.size)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          <p>{msg.content.replace(/\[Attached file:.*?\]/g, "").trim()}</p>
-        </>
-      )}
-      {msg.files && msg.files.length > 0 && (
-        <div className="message-output-indicator" onClick={onOpenOutput}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-          {msg.files.length} output{msg.files.length > 1 ? "s" : ""} — view in panel
-        </div>
-      )}
-    </div>
-  </div>
-));
-
-// Memoized message list — isolates from streaming/status re-renders
-const MessageList = memo(({ messages, onOpenOutput }: { messages: Message[]; onOpenOutput: () => void }) => (
-  <>
-    {messages.map((msg, i) => (
-      <MessageItem key={i} msg={msg} onOpenOutput={onOpenOutput} />
-    ))}
-  </>
-));
-
-// Lightweight streaming renderer — uses dangerouslySetInnerHTML with simple HTML conversion
-// instead of full ReactMarkdown parsing. ReactMarkdown is too expensive at 7 renders/sec
-// and causes browser hangs during swarm activity.
-const STREAM_RENDER_LIMIT = 3000;
-function streamToHtml(text: string): string {
-  // Minimal markdown-like conversion: bold, inline code, blockquotes, links, line breaks
-  return text
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/^&gt; (.*)$/gm, '<blockquote>$1</blockquote>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\n/g, '<br/>');
-}
-const StreamingMessage = memo(({ content }: { content: string }) => {
-  if (!content) return null;
-  let displayContent = content;
-  if (content.length > STREAM_RENDER_LIMIT) {
-    const cutIdx = content.lastIndexOf("\n", content.length - STREAM_RENDER_LIMIT);
-    const trimFrom = cutIdx > 0 ? cutIdx + 1 : content.length - STREAM_RENDER_LIMIT;
-    displayContent = `... ${Math.floor(trimFrom / 1000)}K chars above ...\n\n` + content.slice(trimFrom);
-  }
-  return (
-    <div className="message assistant">
-      <div className="message-avatar">C</div>
-      <div className="message-content">
-        <div dangerouslySetInnerHTML={{ __html: streamToHtml(displayContent) }} />
-      </div>
-    </div>
-  );
-});
-
 export default function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -370,81 +286,29 @@ export default function ChatPage() {
   const [outputPanelOpen, setOutputPanelOpen] = useState(true);
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [activeTaskSessions, setActiveTaskSessions] = useState<Set<string>>(new Set());
+  const [outputRefreshKey, setOutputRefreshKey] = useState(0);
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [activityLogContent, setActivityLogContent] = useState("");
   const activityLogRef = useRef<HTMLDivElement>(null);
   const [showChatLog, setShowChatLog] = useState(false);
   const [chatLogContent, setChatLogContent] = useState("");
   const chatLogRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [autoCreatedArch, setAutoCreatedArch] = useState<{ filename: string; systemName: string } | null>(null);
   const [showAgentEditor, setShowAgentEditor] = useState(false);
   const [agentEditorYaml, setAgentEditorYaml] = useState<string | undefined>();
   const [agentEditorFilename, setAgentEditorFilename] = useState<string | undefined>();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const { connected, sendMessage, onChunk, onResponse, onStatus, socket: socketRef } = useSocket();
 
-  // ─── Throttled streaming: batch chunks to avoid re-rendering on every tiny chunk ───
-  const streamBufferRef = useRef("");
-  const streamFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const STREAM_FLUSH_MS = 350; // flush at most ~3 times/sec (was 150ms — too fast for swarm events)
-
-  const STREAM_MAX_LEN = 8000; // cap streaming string to prevent O(n²) growth
-  const flushStreamBuffer = useCallback(() => {
-    streamFlushTimerRef.current = null;
-    if (streamBufferRef.current) {
-      const buf = streamBufferRef.current;
-      streamBufferRef.current = "";
-      setStreaming((prev) => {
-        const next = prev + buf;
-        // Trim from the front if too long — keep the most recent content
-        if (next.length > STREAM_MAX_LEN) {
-          const cutIdx = next.indexOf("\n", next.length - STREAM_MAX_LEN);
-          return cutIdx > 0 ? next.slice(cutIdx + 1) : next.slice(next.length - STREAM_MAX_LEN);
-        }
-        return next;
-      });
+  // Collect all output files from messages for the right panel
+  const allOutputFiles = messages.reduce<{ files: string[]; msgIndex: number }[]>((acc, msg, i) => {
+    if (msg.files && msg.files.length > 0) {
+      acc.push({ files: msg.files, msgIndex: i });
     }
+    return acc;
   }, []);
-
-  // ─── Throttled status: coalesce rapid status updates ───
-  const pendingStatusRef = useRef<string | null>(null);
-  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const STATUS_THROTTLE_MS = 200;
-
-  const setThrottledStatus = useCallback((s: string) => {
-    pendingStatusRef.current = s;
-    if (!statusTimerRef.current) {
-      statusTimerRef.current = setTimeout(() => {
-        statusTimerRef.current = null;
-        if (pendingStatusRef.current !== null) {
-          setStatus(pendingStatusRef.current);
-          pendingStatusRef.current = null;
-        }
-      }, STATUS_THROTTLE_MS);
-    }
-  }, []);
-
-  // Collect all unique output files from messages for the right panel
-  const allOutputFiles = useMemo(() => {
-    const seen = new Set<string>();
-    const groups: { files: string[]; msgIndex: number }[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (msg.files && msg.files.length > 0) {
-        const uniqueFiles = msg.files.filter(f => {
-          if (seen.has(f)) return false;
-          seen.add(f);
-          return true;
-        });
-        if (uniqueFiles.length > 0) {
-          groups.push({ files: uniqueFiles, msgIndex: i });
-        }
-      }
-    }
-    return groups;
-  }, [messages]);
 
   useEffect(() => {
     api.getSessions().then((s: Session[]) => {
@@ -462,6 +326,12 @@ export default function ChatPage() {
     if (activeSession) {
       api.getSession(activeSession).then((session: any) => {
         setMessages(session.messages || []);
+        // Restore auto-created architecture button if present
+        if (session.autoCreatedArch) {
+          setAutoCreatedArch(session.autoCreatedArch);
+        } else {
+          setAutoCreatedArch(null);
+        }
       });
     }
   }, [activeSession]);
@@ -484,8 +354,6 @@ export default function ChatPage() {
     wait_result: "Waiting for agent",
     check_agents: "Checking agents",
     error_recovery: "Recovering from error",
-    remote_task: "Remote task",
-    remote_progress: "Remote agent working",
   };
 
   // Restore in-progress state on mount, reconnect, or session switch
@@ -514,10 +382,7 @@ export default function ChatPage() {
         // Track running tasks by ID for this session
         const sessionTasks = tasks.filter((t: any) => t.sessionId === activeSession);
         const sessionTaskIds = new Set(sessionTasks.map((t: any) => t.id as string));
-        setRunningTaskIds((prev) => {
-          if (prev.size === sessionTaskIds.size && [...prev].every(id => sessionTaskIds.has(id))) return prev;
-          return sessionTaskIds;
-        });
+        setRunningTaskIds(sessionTaskIds);
         const activeTask = sessionTasks[sessionTasks.length - 1]; // show status of most recent task
         if (activeTask) {
           wasLoadingRef.current = true;
@@ -569,50 +434,63 @@ export default function ChatPage() {
     return () => { cancelled = true; clearInterval(interval); };
   }, [activeSession, connected]);
 
+  // Buffer incoming chunks and flush to state at most every 100ms to avoid flooding React
+  const chunkBufferRef = useRef("");
+  const chunkFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
+    const flushChunks = () => {
+      chunkFlushTimerRef.current = null;
+      if (chunkBufferRef.current) {
+        const buf = chunkBufferRef.current;
+        chunkBufferRef.current = "";
+        setStreaming((prev) => prev + buf);
+      }
+    };
+
     const unsub1 = onChunk((data: any) => {
       if (data.sessionId === activeSession) {
         if (data.clear) {
-          streamBufferRef.current = "";
-          if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
+          chunkBufferRef.current = "";
+          if (chunkFlushTimerRef.current) {
+            clearTimeout(chunkFlushTimerRef.current);
+            chunkFlushTimerRef.current = null;
+          }
           setStreaming("");
         } else {
-          // Buffer chunks and flush periodically to avoid re-rendering on every tiny chunk
-          streamBufferRef.current += data.content;
-          if (!streamFlushTimerRef.current) {
-            streamFlushTimerRef.current = setTimeout(flushStreamBuffer, STREAM_FLUSH_MS);
+          chunkBufferRef.current += data.content;
+          if (!chunkFlushTimerRef.current) {
+            chunkFlushTimerRef.current = setTimeout(flushChunks, 100);
           }
         }
       }
     });
     const unsub2 = onResponse((data) => {
-      if (data.sessionId !== activeSession) return;
-      if (data.done === false) {
-        // Progress flush — just refresh messages to show saved activity logs.
-        // Do NOT clear streaming/status — the task is still running.
+      // Don't clear activeTaskSessions here — let the "done" status handle it
+      // to avoid premature green dot removal while the task is still cleaning up
+      if (data.sessionId === activeSession) {
+        // Refresh messages from server to get the complete history including the new response
+        wasLoadingRef.current = false;
         api.getSession(activeSession).then((session: any) => {
           setMessages(session.messages || []);
+          // Force output panel refresh so new files (images, PDFs) render immediately
+          setOutputRefreshKey((k) => k + 1);
         });
-        return;
+        setStreaming("");
+        // Remove completed task from running set (will be refreshed by polling)
+        setRunningTaskIds((prev) => {
+          if (prev.size === 0) return prev;
+          // We don't know the exact taskId here, so let polling clean up.
+          // But if only 1 task was running, clear it.
+          if (prev.size === 1) return new Set();
+          return prev;
+        });
+        setStatus("");
       }
-      // Final response — refresh messages + clear streaming state
-      wasLoadingRef.current = false;
-      api.getSession(activeSession).then((session: any) => {
-        setMessages(session.messages || []);
-      });
-      streamBufferRef.current = "";
-      if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
-      setStreaming("");
-      setRunningTaskIds((prev) => {
-        if (prev.size === 0) return prev;
-        if (prev.size === 1) return new Set();
-        return prev;
-      });
-      setStatus("");
     });
     const unsub3 = onStatus((data: any) => {
       // Track active task sessions for sidebar indicators
-      if (data.sessionId && (data.status === "thinking" || data.status === "tool_call" || data.status === "running_python" || data.status === "retrying" || data.status === "realtime_agent_working" || data.status === "realtime_agent_tool" || (data.status === "running" && data.content && data.label))) {
+      if (data.sessionId && (data.status === "thinking" || data.status === "tool_call" || data.status === "running_python" || data.status === "retrying" || data.status === "realtime_agent_working" || data.status === "realtime_agent_tool")) {
         setActiveTaskSessions((prev) => {
           if (prev.has(data.sessionId)) return prev;
           const next = new Set(prev);
@@ -625,69 +503,67 @@ export default function ChatPage() {
       if (data.sessionId && data.sessionId !== activeSession) return;
 
       if (data.status === "thinking") {
-        setThrottledStatus("Thinking...");
+        setStatus("Thinking...");
       } else if (data.status === "running_python") {
-        setThrottledStatus("Running Python...");
+        setStatus("Running Python...");
       } else if (data.status === "tool_call") {
         const label = toolLabels[data.tool] || data.tool;
         if (data.tool === "send_task" && data.args) {
           const target = data.args.to || "agent";
           const taskPreview = data.args.task ? ` — ${data.args.task.slice(0, 60)}` : "";
-          setThrottledStatus(`Delegating to ${target}${taskPreview}...`);
+          setStatus(`Delegating to ${target}${taskPreview}...`);
         } else if (data.tool === "wait_result" && data.args) {
-          setThrottledStatus(`Waiting for ${data.args.from || "agent"} to finish...`);
+          setStatus(`Waiting for ${data.args.from || "agent"} to finish...`);
         } else {
-          setThrottledStatus(`${label}...`);
+          setStatus(`${label}...`);
         }
       } else if (data.status === "tool_result") {
         const label = toolLabels[data.tool] || data.tool;
         if (data.tool === "wait_result") {
-          setThrottledStatus("Agent result received, thinking...");
+          setStatus("Agent result received, thinking...");
         } else if (data.tool === "send_task") {
-          setThrottledStatus("Task delegated, orchestrating...");
+          setStatus("Task delegated, orchestrating...");
         } else {
-          setThrottledStatus(`${label} done, thinking...`);
+          setStatus(`${label} done, thinking...`);
         }
       } else if (data.status === "subagent_spawn") {
-        setThrottledStatus(`Sub-agent "${data.label}" spawned...`);
+        setStatus(`Sub-agent "${data.label}" spawned...`);
       } else if (data.status === "subagent_tool") {
-        if (data.tool === "remote_progress" && data.content) {
-          setThrottledStatus(`Remote "${data.label}": ${data.content.slice(0, 100)}`);
-        } else if (data.tool === "remote_task") {
-          setThrottledStatus(`Sub-agent "${data.label}": delegating to remote...`);
-        } else {
-          const label = toolLabels[data.tool] || data.tool;
-          setThrottledStatus(`Sub-agent "${data.label}": ${label}...`);
-        }
+        const label = toolLabels[data.tool] || data.tool;
+        setStatus(`Sub-agent "${data.label}": ${label}...`);
       } else if (data.status === "subagent_tool_done") {
-        // silent — keep current status
+        const label = toolLabels[data.tool] || data.tool;
+        setStatus(`Sub-agent "${data.label}": ${label} done...`);
       } else if (data.status === "subagent_done") {
-        setThrottledStatus(`Sub-agent "${data.label}" completed`);
+        setStatus(`Sub-agent "${data.label}" completed`);
       } else if (data.status === "subagent_error") {
-        setThrottledStatus(`Sub-agent "${data.label}" failed: ${data.error}`);
+        setStatus(`Sub-agent "${data.label}" failed: ${data.error}`);
       // ─── Realtime Agent status ───
       } else if (data.status === "realtime_agent_ready") {
-        setThrottledStatus(`Agent "${data.label}" (${data.role}) ready`);
+        setStatus(`Agent "${data.label}" (${data.role}) ready`);
       } else if (data.status === "realtime_agent_working") {
-        setThrottledStatus(`Agent "${data.label}" working — ${(data.task || "").slice(0, 80)}`);
+        setStatus(`Agent "${data.label}" working — ${(data.task || "").slice(0, 80)}`);
       } else if (data.status === "realtime_agent_tool") {
         const label = data.tool === "error_recovery"
           ? "recovering from error"
           : toolLabels[data.tool] || data.tool;
-        setThrottledStatus(`Agent "${data.label}": ${label}...`);
+        setStatus(`Agent "${data.label}": ${label}...`);
       } else if (data.status === "realtime_agent_tool_done") {
         // silent — keep current status
       } else if (data.status === "realtime_agent_done") {
-        setThrottledStatus(`Agent "${data.label}" completed`);
-      } else if (data.status === "running" && data.content && data.label) {
-        setThrottledStatus(`Remote "${data.label}": ${data.content.slice(0, 100)}`);
+        setStatus(`Agent "${data.label}" completed`);
+      } else if (data.status === "running" && data.content) {
+        setStatus(`📡 ${data.label}: ${(data.content || "").slice(0, 80)}`);
+      } else if (data.status === "done" && data.label) {
+        setStatus(`Agent "${data.label}" remote task completed`);
       } else if (data.status === "retrying") {
-        setThrottledStatus(`Retrying (${data.attempt}/${data.maxRetries})...`);
+        setStatus(`Retrying (${data.attempt}/${data.maxRetries})...`);
       } else if (data.status === "job_complete") {
         // Orchestrator finished — refresh messages and output files
         if (data.sessionId === activeSession && activeSession) {
           api.getSession(activeSession).then((session: any) => {
             setMessages(session.messages || []);
+            setOutputRefreshKey((k) => k + 1); // force output panel re-render
             setOutputPanelOpen(true); // auto-open output panel if files exist
           });
           setStatus("Job complete");
@@ -702,17 +578,17 @@ export default function ChatPage() {
             return next;
           });
         }
-        setRunningTaskIds((prev) => prev.size === 0 ? prev : new Set());
+        setRunningTaskIds(new Set());
         setStatus("");
-      } else if (typeof data.status === "string" && data.status.startsWith("Waiting for ")) {
-        // "Waiting for agentName..." from late-result monitor — show it
-        setThrottledStatus(data.status);
       } else {
-        // Unknown status — ignore silently instead of clearing status
-        // (clearing status on every unrecognized event caused render thrashing)
+        setStatus("");
       }
     });
-    return () => { unsub1(); unsub2(); unsub3(); };
+    return () => {
+      unsub1(); unsub2(); unsub3();
+      if (chunkFlushTimerRef.current) clearTimeout(chunkFlushTimerRef.current);
+      chunkBufferRef.current = "";
+    };
   }, [activeSession, onChunk, onResponse, onStatus]);
 
   // ─── Listen for auto-created architecture events ───
@@ -735,7 +611,6 @@ export default function ChatPage() {
     const fetchLog = () => {
       api.getActivityLog(activeSession).then((res: any) => {
         if (!cancelled && res.content) {
-          // Only auto-scroll if user is already near the bottom
           const el = activityLogRef.current;
           const wasAtBottom = el ? (el.scrollHeight - el.scrollTop - el.clientHeight < 40) : true;
           setActivityLogContent(res.content);
@@ -746,11 +621,11 @@ export default function ChatPage() {
       }).catch(() => {});
     };
     fetchLog();
-    const iv = setInterval(fetchLog, isLoading ? 2000 : 5000); // faster poll while task running
+    const iv = setInterval(fetchLog, isLoading ? 2000 : 5000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [showActivityLog, activeSession, isLoading]);
 
-  // ─── Chat log polling ───
+  // ─── Chat log polling: fetch log file when panel is open ───
   useEffect(() => {
     if (!showChatLog || !activeSession) { setChatLogContent(""); return; }
     let cancelled = false;
@@ -771,56 +646,16 @@ export default function ChatPage() {
     return () => { cancelled = true; clearInterval(iv); };
   }, [showChatLog, activeSession, isLoading]);
 
-  // ─── Sub-agent reasoning stream → append to chat log panel ───
+  // Throttle scrollIntoView to at most once every 200ms to avoid layout thrashing
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!showChatLog || !activeSession) return;
-    const unsub = onStatus((data: any) => {
-      if (data?.sessionId && data.sessionId !== activeSession) return;
-      if (data?.status !== "subagent_text" && data?.status !== "realtime_agent_text") return;
-      const text = typeof data?.text === "string" ? data.text : "";
-      if (!text) return;
-      const label = data?.label || data?.agent || "agent";
-      setChatLogContent((prev) => prev + `\n[${label} thinking] ${text}`);
-    });
-    return unsub;
-  }, [showChatLog, activeSession, onStatus]);
-
-  // ─── Smart scroll: only auto-scroll if user is near the bottom ───
-  const chatMessagesRef = useRef<HTMLDivElement>(null);
-  const userScrolledUpRef = useRef(false);
-
-  // Track whether user has scrolled up from bottom
-  useEffect(() => {
-    const el = chatMessagesRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      userScrolledUpRef.current = distFromBottom > 80;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [activeSession]);
-
-  const prevMessagesLenRef = useRef(0);
-  useEffect(() => {
-    if (messages.length !== prevMessagesLenRef.current) {
-      prevMessagesLenRef.current = messages.length;
-      if (!userScrolledUpRef.current) {
+    if (!scrollTimerRef.current) {
+      scrollTimerRef.current = setTimeout(() => {
+        scrollTimerRef.current = null;
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-      }
+      }, 200);
     }
-  }, [messages]);
-
-  // During streaming, scroll on a fixed interval — only if user hasn't scrolled up
-  useEffect(() => {
-    if (!streaming) return;
-    const iv = setInterval(() => {
-      if (!userScrolledUpRef.current) {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-      }
-    }, 500);
-    return () => clearInterval(iv);
-  }, [!!streaming]);
+  }, [messages, streaming]);
 
   const createNewSession = async () => {
     const session = await api.createSession();
@@ -940,6 +775,11 @@ export default function ChatPage() {
     }
   };
 
+  const isImageFile = (name: string) => {
+    const ext = name.split(".").pop()?.toLowerCase() || "";
+    return ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext);
+  };
+
   return (
     <div className="chat-page">
       <div className={`chat-sidebar-backdrop ${mobileSidebar ? "visible" : ""}`} onClick={() => setMobileSidebar(false)} />
@@ -1037,10 +877,51 @@ export default function ChatPage() {
             </button>
           )}
         </div>
+        {showActivityLog && (
+          <div className="activity-log-panel">
+            <div className="activity-log-header">
+              <span>Activity Log</span>
+              {isLoading && <span className="activity-log-live">LIVE</span>}
+            </div>
+            <div className="activity-log-body" ref={activityLogRef}>
+              {activityLogContent ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{activityLogContent}</ReactMarkdown>
+              ) : (
+                <div className="activity-log-empty">No activity yet. Run a task with agents to see logs here.</div>
+              )}
+            </div>
+          </div>
+        )}
+        {showChatLog && (
+          <div className="activity-log-panel">
+            <div className="activity-log-header">
+              <span>Chat Log</span>
+              {isLoading && <span className="activity-log-live">LIVE</span>}
+              <button
+                onClick={() => {
+                  if (!chatLogContent) return;
+                  const blob = new Blob([chatLogContent], { type: "text/plain" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `chat-log-${activeSession || "session"}.txt`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                style={{ marginLeft: "auto", padding: "2px 10px", fontSize: 11, borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.8)", cursor: "pointer" }}
+                title="Save log as text file"
+              >
+                Save .txt
+              </button>
+            </div>
+            <div className="activity-log-body" ref={chatLogRef} style={{ fontFamily: "monospace", fontSize: 11, whiteSpace: "pre-wrap" }}>
+              {chatLogContent || "No chat log yet. Send a message to start recording."}
+            </div>
+          </div>
+        )}
         {!activeSession && messages.length === 0 ? (
           <div className="chat-empty">
-            <h1>TigrimOS</h1>
-            <p style={{ fontSize: 12, opacity: 0.4, marginTop: -8, marginBottom: 8 }}>v1.2.0</p>
+            <h1>Tiger CoWork</h1>
             <p>Start a conversation to get help with coding, run Python, manage files, and more.</p>
             <div className="chat-suggestions">
               {["Write a Python script to generate a PDF report", "Help me analyze a CSV file", "Build a React dashboard with charts", "Create a web scraper"].map((s) => (
@@ -1051,56 +932,55 @@ export default function ChatPage() {
             </div>
           </div>
         ) : (
-          <>
-            {showActivityLog && (
-              <div className="activity-log-panel">
-                <div className="activity-log-header">
-                  <span>Activity Log</span>
-                  {isLoading && <span className="activity-log-live">LIVE</span>}
-                </div>
-                <div className="activity-log-body" ref={activityLogRef}>
-                  {activityLogContent ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{activityLogContent}</ReactMarkdown>
+          <div className="chat-messages">
+            {messages.map((msg, i) => (
+              <div key={i} className={`message ${msg.role}`}>
+                <div className="message-avatar">{msg.role === "user" ? "U" : "C"}</div>
+                <div className="message-content">
+                  {msg.role === "assistant" ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{msg.content}</ReactMarkdown>
                   ) : (
-                    <div className="activity-log-empty">No activity yet. Run a task with agents to see logs here.</div>
+                    <>
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="message-attachments">
+                          {msg.attachments.map((f, j) => (
+                            <div key={j} className="attachment-item">
+                              {isImageFile(f.name) ? (
+                                <img src={sandboxUrl(f.path)} alt={f.name} className="attachment-image-preview" />
+                              ) : (
+                                <div className="attachment-icon">{getFileIcon(f.name)}</div>
+                              )}
+                              <div className="attachment-info">
+                                <span className="attachment-name">{f.name}</span>
+                                <span className="attachment-size">{formatFileSize(f.size)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <p>{msg.content.replace(/\[Attached file:.*?\]/g, "").trim()}</p>
+                    </>
+                  )}
+                  {msg.files && msg.files.length > 0 && (
+                    <div className="message-output-indicator" onClick={() => setOutputPanelOpen(true)}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                      {msg.files.length} output{msg.files.length > 1 ? "s" : ""} — view in panel
+                    </div>
                   )}
                 </div>
               </div>
-            )}
-            {showChatLog && (
-              <div className="activity-log-panel">
-                <div className="activity-log-header">
-                  <span>Chat Log</span>
-                  {isLoading && <span className="activity-log-live">LIVE</span>}
-                  <button
-                    onClick={() => {
-                      if (!chatLogContent) return;
-                      const blob = new Blob([chatLogContent], { type: "text/plain" });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `chat-log-${activeSession || "session"}.txt`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                    }}
-                    style={{ marginLeft: "auto", padding: "2px 10px", fontSize: 11, borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.8)", cursor: "pointer" }}
-                    title="Save log as text file"
-                  >
-                    Save .txt
-                  </button>
-                </div>
-                <div className="activity-log-body" ref={chatLogRef} style={{ fontFamily: "monospace", fontSize: 11, whiteSpace: "pre-wrap" }}>
-                  {chatLogContent || "No chat log yet. Send a message to start recording."}
+            ))}
+            {streaming && (
+              <div className="message assistant">
+                <div className="message-avatar">C</div>
+                <div className="message-content">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{streaming}</ReactMarkdown>
                 </div>
               </div>
             )}
-            <div className="chat-messages" ref={chatMessagesRef}>
-              <MessageList messages={messages} onOpenOutput={() => setOutputPanelOpen(true)} />
-              <StreamingMessage content={streaming} />
-              {status && <div className="chat-status">{status}</div>}
-              <div ref={messagesEndRef} />
-            </div>
-          </>
+            {status && <div className="chat-status">{status}</div>}
+            <div ref={messagesEndRef} />
+          </div>
         )}
 
         <div className="chat-input-container">
@@ -1148,7 +1028,7 @@ export default function ChatPage() {
             <textarea
               ref={textareaRef}
               className="chat-input"
-              placeholder="Message TigrimOS..."
+              placeholder="Message Tiger CoWork..."
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
@@ -1186,8 +1066,8 @@ export default function ChatPage() {
             </button>
           </div>
           <div className="output-panel-content">
-            {allOutputFiles.map((group) => (
-              <OutputCanvas key={group.files.join(",")} files={group.files} />
+            {allOutputFiles.map((group, gi) => (
+              <OutputCanvas key={`${gi}-${outputRefreshKey}`} files={group.files} />
             ))}
           </div>
         </div>
@@ -1206,7 +1086,7 @@ export default function ChatPage() {
         <Suspense fallback={<div style={{ padding: 40, textAlign: "center" }}>Loading editor...</div>}>
           <AgentEditor
             onClose={() => { setShowAgentEditor(false); setAgentEditorYaml(undefined); setAgentEditorFilename(undefined); }}
-            onSave={(filename, content) => {
+            onSave={(filename: string, content: string) => {
               api.saveAgentConfig(filename, content);
               setShowAgentEditor(false);
               setAgentEditorYaml(undefined);

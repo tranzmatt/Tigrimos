@@ -12,48 +12,6 @@ interface ChatMessage {
 }
 
 /**
- * Strip model chain-of-thought / thinking blocks from response content.
- * Many models leak internal reasoning like "The user is asking..." or "I should respond..."
- * when given persona instructions. This filter removes those blocks.
- *
- * Strategy: split by double-newline into paragraphs. Any paragraph that is purely
- * reasoning (matches CoT patterns) is removed. The actual response is preserved.
- */
-export function stripThinkingFromContent(content: string): string {
-  if (!content) return content;
-
-  // Patterns that indicate a paragraph is internal reasoning (case-insensitive)
-  const thinkingStarters = [
-    /^the user\b/i,
-    /^I (?:should|need to|will|must|can|cannot|don't|am going|have to|was|think|notice)/i,
-    /^OK[,.]? (?:that|let|so|now|I)/i,
-    /^Looking (?:at|back)/i,
-    /^This (?:seems|is a|looks like)/i,
-    /^Now I (?:can|should|need|will)/i,
-    /^Let me (?:think|analyze|check|respond|clarify|consider)/i,
-    /^According to my (?:SOUL|IDENTITY|persona)/i,
-    /^Based on my (?:SOUL|IDENTITY|persona|instructions)/i,
-    /^My (?:SOUL|IDENTITY|persona) (?:says|tells|instructs|defines)/i,
-    /^Since (?:the user|they|this|I)/i,
-    /^(?:First|Here),? I (?:should|need|will|must)/i,
-  ];
-
-  // Split into paragraphs (separated by blank lines)
-  const paragraphs = content.split(/\n\s*\n/);
-  const filtered = paragraphs.filter((para) => {
-    const trimmed = para.trim();
-    if (!trimmed) return false;
-    // Check if this paragraph starts with a thinking pattern
-    return !thinkingStarters.some((re) => re.test(trimmed));
-  });
-
-  // If everything was filtered out, return original to avoid empty response
-  if (filtered.length === 0) return content;
-
-  return filtered.join("\n\n").trim();
-}
-
-/**
  * Estimate the total character size of a messages array.
  */
 export function estimateMessagesChars(messages: Array<{ content: any; tool_calls?: any[]; [k: string]: any }>): number {
@@ -818,12 +776,11 @@ interface TigerBotResponse {
   toolResults?: Array<{ tool: string; result: any }>;
 }
 
-// Strip internal tool call markers from LLM responses before showing to users
-// Handles various formats the LLM may use to represent tool calls inline
+// Strip internal tool call markers and model thinking/reasoning from LLM responses
 function sanitizeToolCallContent(content: string): string {
   if (!content) return content;
   let cleaned = content;
-  // Remove model thinking/reasoning blocks (e.g. <think>...</think>, <reasoning>...</reasoning>)
+  // Remove model thinking/reasoning blocks (e.g. <think>...</think>, <thinking>...</thinking>, <reasoning>...</reasoning>)
   cleaned = cleaned.replace(/<think(?:ing)?>\s*[\s\S]*?<\/think(?:ing)?>\s*/gi, "");
   cleaned = cleaned.replace(/<reasoning>\s*[\s\S]*?<\/reasoning>\s*/gi, "");
   cleaned = cleaned.replace(/<reflection>\s*[\s\S]*?<\/reflection>\s*/gi, "");
@@ -852,15 +809,20 @@ async function getApiConfig() {
   const rawUrl = settings.tigerBotApiUrl || "https://api.tigerbot.com/bot-chat/openai/v1/chat/completions";
   // Anthropic uses /v1/messages endpoint, not /chat/completions
   const isAnthropic = provider === "anthropic_claude_code" || rawUrl.includes("api.anthropic.com");
-  const isLocal = provider === "ollama_local" || provider === "lmstudio_local" || provider === "openai_local" || rawUrl.includes("host.local");
-  const isKimi = rawUrl.includes("api.kimi.com") || rawUrl.includes("kimi.moonshot");
   const apiUrl = isAnthropic
     ? rawUrl.replace(/\/$/, "").replace(/\/messages$/, "") + "/messages"
     : rawUrl.endsWith("/chat/completions") ? rawUrl : rawUrl.replace(/\/$/, "") + "/chat/completions";
   // OAuth tokens (sk-ant-oat01-) use Bearer auth; API keys (sk-ant-api) use x-api-key
   const isOAuthToken = isAnthropic && apiKey?.startsWith("sk-ant-oat01-");
-  return { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal, isKimi };
+  const isKimi = provider === "kimi" || rawUrl.includes("api.kimi.com");
+  return { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isKimi };
 }
+
+// Kimi Code API gates access by requiring Claude Code identity headers.
+const KIMI_HEADERS: Record<string, string> = {
+  "User-Agent": "claude-code/1.0",
+  "X-Client-Name": "claude-code",
+};
 
 // Single LLM call (no tool loop)
 /**
@@ -1043,6 +1005,7 @@ function toAnthropicTools(tools: any[]): any[] {
 // Convert Anthropic response to OpenAI-compatible format
 function fromAnthropicResponse(data: any): any {
   const content = data.content || [];
+  // Only include text blocks — exclude thinking, redacted_thinking, etc.
   const textParts = content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
   const toolUses = content.filter((b: any) => b.type === "tool_use");
   const toolCalls = toolUses.map((tu: any) => ({
@@ -1066,8 +1029,8 @@ function fromAnthropicResponse(data: any): any {
 }
 
 async function llmCall(messages: ChatMessage[], options: { tools?: any[]; model?: string; signal?: AbortSignal } = {}): Promise<any> {
-  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal, isKimi } = await getApiConfig();
-  if (!apiKey && !isLocal) throw new Error("API key not configured");
+  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isKimi } = await getApiConfig();
+  if (!apiKey) throw new Error("API key not configured");
 
   const sanitized = sanitizeMessages(messages);
   const settings = await getSettings();
@@ -1119,17 +1082,13 @@ async function llmCall(messages: ChatMessage[], options: { tools?: any[]; model?
       body.tools = options.tools;
       body.tool_choice = "auto";
     }
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (apiKey && !isLocal) headers["Authorization"] = `Bearer ${apiKey}`;
-    else if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-    // Kimi coding API requires specific client headers
-    if (isKimi) {
-      headers["User-Agent"] = "claude-code/1.0";
-      headers["X-Client-Name"] = "claude-code";
-    }
     response = await fetch(apiUrl, {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        ...(isKimi ? KIMI_HEADERS : {}),
+      },
       body: JSON.stringify(body),
       signal: options.signal,
     });
@@ -1217,8 +1176,8 @@ export async function callTigerBotWithTools(
     return { content: result.content, toolResults: result.toolCalls?.map(t => ({ tool: t, result: { ok: true } })) };
   }
 
-  const { apiKey, isLocal } = await getApiConfig();
-  if (!apiKey && !isLocal) {
+  const { apiKey } = await getApiConfig();
+  if (!apiKey) {
     return { content: "API key not configured. Go to Settings to add your API key." };
   }
 
@@ -1500,20 +1459,15 @@ export async function callTigerBotWithTools(
       }
       return tc;
     }) : undefined;
-    const assistantMsg: any = {
+    allMessages.push({
       role: "assistant",
       content: message.content || "",
       tool_calls: truncatedToolCalls,
-    };
-    // Kimi requires reasoning_content in assistant messages when thinking is enabled
-    if (message.reasoning_content !== undefined) {
-      assistantMsg.reasoning_content = message.reasoning_content;
-    }
-    allMessages.push(assistantMsg);
+    });
 
-    // Stream the agent's reasoning text to the chat log callback
+    // Stream the agent's reasoning text to the callback (for chat log capture)
     if (onAgentText && message.content && typeof message.content === "string" && message.content.trim()) {
-      try { onAgentText(message.content); } catch {}
+      onAgentText(message.content);
     }
 
     // If no tool calls, check if the LLM is giving up after errors — nudge it to retry
@@ -1574,9 +1528,8 @@ export async function callTigerBotWithTools(
       }
 
       // Also nudge if the LLM stops with incomplete-sounding content (even without explicit errors)
-      // Skip nudge on round 0 with no tool calls — the model is just answering a conversational question
       const contentLooksIncomplete = /\b(will now|next step|let me|i('ll| will)|working on|in progress|wait for)\b/i.test(message.content || "");
-      if (contentLooksIncomplete && totalToolCalls > 0 && errorRecoveryAttempts < maxErrorRecoveries && round < maxToolRounds - 1) {
+      if (contentLooksIncomplete && errorRecoveryAttempts < maxErrorRecoveries && round < maxToolRounds - 1) {
         errorRecoveryAttempts++;
         console.log(`[ToolLoop] LLM stopped with incomplete-sounding response. Nudging to continue (attempt ${errorRecoveryAttempts}/${maxErrorRecoveries})...`);
         allMessages.push({
@@ -1594,9 +1547,8 @@ export async function callTigerBotWithTools(
     // Loop detection: same tools with same args called 3 rounds in a row → stop
     // Use tool names + truncated args hash to distinguish explore vs chart vs fix
     // Skip loop detection for agent coordination tools — send_task/wait_result naturally repeat
-    const agentCoordTools = new Set(["send_task", "wait_result", "check_agents", "spawn_subagent", "select_swarm", "create_architecture"]);
-    const isAgentCoordTool = (name: string) => agentCoordTools.has(name) || name.startsWith("spawn_");
-    const hasNonAgentTool = toolCalls.some((tc: any) => !isAgentCoordTool(tc.function?.name || ""));
+    const agentCoordTools = new Set(["send_task", "wait_result", "check_agents"]);
+    const hasNonAgentTool = toolCalls.some((tc: any) => !agentCoordTools.has(tc.function?.name || ""));
     const currentSignature = toolCalls.map((tc: any) => {
       const name = tc.function?.name || "";
       const args = tc.function?.arguments || "";
@@ -1666,11 +1618,10 @@ export async function callTigerBotWithTools(
       parsedToolCalls.push({ tc, fnName, fnArgs });
     }
 
-    // Separate parallelizable calls (spawn_subagent, spawn_<agentId>, send_task, wait_result) from sequential ones
+    // Separate parallelizable calls (spawn_subagent, send_task, wait_result) from sequential ones
     const parallelToolNames = new Set(["spawn_subagent", "send_task", "wait_result"]);
-    const isParallelTool = (name: string) => parallelToolNames.has(name) || name.startsWith("spawn_");
-    const subagentCalls = parsedToolCalls.filter(p => isParallelTool(p.fnName));
-    const otherCalls = parsedToolCalls.filter(p => !isParallelTool(p.fnName));
+    const subagentCalls = parsedToolCalls.filter(p => parallelToolNames.has(p.fnName));
+    const otherCalls = parsedToolCalls.filter(p => !parallelToolNames.has(p.fnName));
 
     // Helper to execute a single tool call and record result
     const executeTool = async (parsed: { tc: any; fnName: string; fnArgs: any }) => {
@@ -1924,15 +1875,11 @@ Scoring guide:
           const message = choice.message;
           const retryToolCalls = message.tool_calls || [];
 
-          const retryAssistantMsg: any = {
+          allMessages.push({
             role: "assistant",
             content: message.content || "",
             tool_calls: retryToolCalls.length ? retryToolCalls : undefined,
-          };
-          if (message.reasoning_content !== undefined) {
-            retryAssistantMsg.reasoning_content = message.reasoning_content;
-          }
-          allMessages.push(retryAssistantMsg);
+          });
 
           if (!retryToolCalls.length) break; // LLM done
 
@@ -2008,15 +1955,11 @@ Scoring guide:
         }
 
         const nudgeMsg = nudgeChoice.message;
-        const nudgeAssistantMsg: any = {
+        allMessages.push({
           role: "assistant",
           content: nudgeMsg.content || "",
           tool_calls: nudgeMsg.tool_calls,
-        };
-        if (nudgeMsg.reasoning_content !== undefined) {
-          nudgeAssistantMsg.reasoning_content = nudgeMsg.reasoning_content;
-        }
-        allMessages.push(nudgeAssistantMsg);
+        });
 
         let nudgeHasOutput = false;
         for (const tc of nudgeMsg.tool_calls) {
@@ -2118,9 +2061,9 @@ export async function callTigerBot(
   messages: ChatMessage[],
   systemPrompt?: string
 ): Promise<TigerBotResponse> {
-  const { apiKey, isLocal } = await getApiConfig();
-  if (!apiKey && !isLocal) {
-    return { content: "API key not configured. Go to Settings to add your API key." };
+  const { apiKey } = await getApiConfig();
+  if (!apiKey) {
+    return { content: "TigerBot API key not configured. Go to Settings to add your API key." };
   }
 
   const allMessages: ChatMessage[] = [];
@@ -2164,10 +2107,10 @@ export async function streamTigerBot(
   onChunk: (text: string) => void,
   onDone: () => void
 ): Promise<void> {
-  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isLocal, isKimi } = await getApiConfig();
+  const { apiKey, model, apiUrl, isAnthropic, isOAuthToken, isKimi } = await getApiConfig();
   const settings = await getSettings();
 
-  if (!apiKey && !isLocal) {
+  if (!apiKey) {
     onChunk("API key not configured. Go to Settings to add your API key.");
     onDone();
     return;
@@ -2199,15 +2142,13 @@ export async function streamTigerBot(
         }),
       });
     } else {
-      const oaiHeaders: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) oaiHeaders["Authorization"] = `Bearer ${apiKey}`;
-      if (isKimi) {
-        oaiHeaders["User-Agent"] = "TigrimOS/1.0";
-        oaiHeaders["X-Client-Name"] = "TigrimOS";
-      }
       response = await fetch(apiUrl, {
         method: "POST",
-        headers: oaiHeaders,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          ...(isKimi ? KIMI_HEADERS : {}),
+        },
         body: JSON.stringify({
           model,
           messages: allMessages,

@@ -13,7 +13,6 @@ export async function tasksRoutes(fastify: FastifyInstance) {
     return getActiveTasks();
   });
 
-  // Finished tasks history — last 100 completed/cancelled/errored tasks
   fastify.get("/finished", async (request, reply) => {
     return getFinishedTasks();
   });

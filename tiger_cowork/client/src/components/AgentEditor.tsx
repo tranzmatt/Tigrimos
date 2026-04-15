@@ -20,11 +20,10 @@ interface AgentNode {
   p2pConfidenceDomains: string[];
   p2pReputationScore: number;
   p2pBidder: boolean;
-  // Remote agent fields
   isRemote: boolean;
-  remoteInstance: string;   // saved instance name/id
-  remoteUrl: string;        // inline URL fallback
-  remoteToken: string;      // inline token
+  remoteInstance: string;
+  remoteUrl: string;
+  remoteToken: string;
 }
 
 interface P2PGovernance {
@@ -47,7 +46,6 @@ interface Connection {
 
 interface EditorState {
   systemName: string;
-  systemDescription: string;
   orchestrationMode: string;
   agents: AgentNode[];
   connections: Connection[];
@@ -62,6 +60,7 @@ const ROLE_COLORS: Record<string, string> = {
   reporter: "#9c27b0",
   researcher: "#00bcd4",
   peer: "#ff9800",
+  remote: "#6366f1",
   default: "#607d8b",
 };
 
@@ -86,20 +85,27 @@ function AgentDefPanel({
   onClose,
   onDelete,
   orchestrationMode,
-  remoteInstances,
 }: {
   agent: AgentNode;
   onUpdate: (a: AgentNode) => void;
   onClose: () => void;
   onDelete: () => void;
   orchestrationMode: string;
-  remoteInstances: Array<{ id: string; name: string; url: string; token: string }>;
 }) {
   const [llmPrompt, setLlmPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
   const [showModelInput, setShowModelInput] = useState(!!agent.model);
   const [modelValidating, setModelValidating] = useState(false);
   const [modelValid, setModelValid] = useState<boolean | null>(null);
+  const [remoteInstancesList, setRemoteInstancesList] = useState<Array<{ id: string; name: string; url: string }>>([]);
+
+  useEffect(() => {
+    api.getSettings().then((s: any) => {
+      if (Array.isArray(s.remoteInstances)) {
+        setRemoteInstancesList(s.remoteInstances);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Reset model UI state when switching to a different agent
   useEffect(() => {
@@ -200,12 +206,16 @@ function AgentDefPanel({
           </div>
           {/* Remote Agent Toggle */}
           {agent.role !== "human" && (
-            <div className="form-group" style={{ marginTop: 8 }}>
+            <div className="form-group">
               <label className="bus-toggle-label">
                 <input
                   type="checkbox"
                   checked={agent.isRemote}
-                  onChange={(e) => onUpdate({ ...agent, isRemote: e.target.checked, color: e.target.checked ? "#6366f1" : (ROLE_COLORS[agent.role] || ROLE_COLORS.default) })}
+                  onChange={(e) => onUpdate({
+                    ...agent,
+                    isRemote: e.target.checked,
+                    color: e.target.checked ? ROLE_COLORS.remote : (ROLE_COLORS[agent.role] || agent.color),
+                  })}
                 />
                 <span>Remote Agent (runs on another machine)</span>
               </label>
@@ -217,40 +227,44 @@ function AgentDefPanel({
             <>
               <div className="agent-def-divider">remote instance</div>
               <div className="form-group">
-                <label>Remote Instance</label>
-                <select
-                  value={agent.remoteInstance}
-                  onChange={(e) => onUpdate({ ...agent, remoteInstance: e.target.value })}
-                >
-                  <option value="">— select saved instance —</option>
-                  {remoteInstances.map((ri) => (
-                    <option key={ri.id} value={ri.id}>{ri.name} ({ri.url})</option>
-                  ))}
-                </select>
-                <p className="bus-hint">Choose a saved instance from Settings → Remote Instances</p>
+                <label>Remote Instance (from Settings)</label>
+                {remoteInstancesList.length > 0 ? (
+                  <select
+                    value={agent.remoteInstance}
+                    onChange={(e) => onUpdate({ ...agent, remoteInstance: e.target.value })}
+                  >
+                    <option value="">— select remote instance —</option>
+                    {remoteInstancesList.map((ri) => (
+                      <option key={ri.id} value={ri.id}>{ri.name} ({ri.url})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={agent.remoteInstance}
+                    onChange={(e) => onUpdate({ ...agent, remoteInstance: e.target.value })}
+                    placeholder="e.g. cloud-pc"
+                  />
+                )}
+                <p className="bus-hint">Select a Remote Instance configured in Settings → Remote Instances</p>
               </div>
-              {!agent.remoteInstance && (
-                <>
-                  <div className="agent-def-divider">or use inline URL</div>
-                  <div className="form-group">
-                    <label>Remote URL</label>
-                    <input
-                      value={agent.remoteUrl}
-                      onChange={(e) => onUpdate({ ...agent, remoteUrl: e.target.value })}
-                      placeholder="http://192.168.1.x:3001"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Remote Token</label>
-                    <input
-                      type="password"
-                      value={agent.remoteToken}
-                      onChange={(e) => onUpdate({ ...agent, remoteToken: e.target.value })}
-                      placeholder="rtk_... (bridge token of remote machine)"
-                    />
-                  </div>
-                </>
-              )}
+              <div className="agent-def-divider">or use inline URL</div>
+              <div className="form-group">
+                <label>URL</label>
+                <input
+                  value={agent.remoteUrl}
+                  onChange={(e) => onUpdate({ ...agent, remoteUrl: e.target.value })}
+                  placeholder="http://192.168.1.x:3001"
+                />
+              </div>
+              <div className="form-group">
+                <label>Token</label>
+                <input
+                  type="password"
+                  value={agent.remoteToken}
+                  onChange={(e) => onUpdate({ ...agent, remoteToken: e.target.value })}
+                  placeholder="Remote machine's ACCESS_TOKEN"
+                />
+              </div>
             </>
           )}
 
@@ -371,26 +385,36 @@ function AgentDefPanel({
               </div>
           )}
 
-          {/* Persona, Responsibilities — shown for all non-human agents (including remote) */}
+          {/* Persona & Responsibilities — shown for all non-human agents including remote */}
           {agent.role !== "human" && (
             <>
               <div className="form-group">
-                <label>Persona{agent.isRemote ? " (for orchestrator reference only)" : ""}</label>
+                <label>Persona</label>
                 <textarea
                   value={agent.persona}
                   onChange={(e) => onUpdate({ ...agent, persona: e.target.value })}
                   rows={4}
-                  placeholder="Describe the agent's personality, expertise, and behavior..."
+                  placeholder={agent.isRemote
+                    ? "Describe the remote agent's expertise — the orchestrator uses this to decide which tasks to route here..."
+                    : "Describe the agent's personality, expertise, and behavior..."}
                 />
+                {agent.isRemote && (
+                  <p className="bus-hint">The orchestrator uses Persona to decide which agent gets which task</p>
+                )}
               </div>
               <div className="form-group">
-                <label>Responsibilities (one per line){agent.isRemote ? " — used by orchestrator to choose this agent" : ""}</label>
+                <label>Responsibilities (one per line)</label>
                 <textarea
                   value={agent.responsibilities.join("\n")}
                   onChange={(e) => onUpdate({ ...agent, responsibilities: e.target.value.split("\n").filter(Boolean) })}
                   rows={4}
-                  placeholder="- Parse and interpret requirements&#10;- Assign tasks to sub-agents&#10;- Review outputs"
+                  placeholder={agent.isRemote
+                    ? "- Handle data processing tasks\n- Execute heavy computations\n- Generate reports from remote resources"
+                    : "- Parse and interpret requirements\n- Assign tasks to sub-agents\n- Review outputs"}
                 />
+                {agent.isRemote && (
+                  <p className="bus-hint">Responsibilities are checked first when routing tasks — be specific</p>
+                )}
               </div>
             </>
           )}
@@ -398,48 +422,45 @@ function AgentDefPanel({
           {/* Bus/Mesh/P2P — hidden for remote agents */}
           {!agent.isRemote && (
             <>
-              {/* Bus Connection */}
-              <div className="agent-def-divider">communication</div>
-              <div className="form-group">
-                <label className="bus-toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={agent.busEnabled}
-                    onChange={(e) => onUpdate({ ...agent, busEnabled: e.target.checked })}
-                  />
-                  <span>Connected to Message Bus</span>
-                </label>
-                <p className="bus-hint">Shared broadcast channel — all bus-connected agents can see messages</p>
-              </div>
-              {agent.busEnabled && (
-                <div className="form-group">
-                  <label>Bus Topics (one per line)</label>
-                  <textarea
-                    value={agent.busTopics.join("\n")}
-                    onChange={(e) => onUpdate({ ...agent, busTopics: e.target.value.split("\n").filter(Boolean) })}
-                    rows={3}
-                    placeholder="parameter_share&#10;clash_flag&#10;status_update"
-                  />
-                </div>
-              )}
-
-              {/* Mesh — free to talk to any agent */}
-              <div className="form-group">
-                <label className="bus-toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={agent.meshEnabled}
-                    onChange={(e) => onUpdate({ ...agent, meshEnabled: e.target.checked })}
-                  />
-                  <span>Mesh (free to talk)</span>
-                </label>
-                <p className="bus-hint">Can send tasks to any agent without needing connection lines</p>
-              </div>
-            </>
+          <div className="agent-def-divider">communication</div>
+          <div className="form-group">
+            <label className="bus-toggle-label">
+              <input
+                type="checkbox"
+                checked={agent.busEnabled}
+                onChange={(e) => onUpdate({ ...agent, busEnabled: e.target.checked })}
+              />
+              <span>Connected to Message Bus</span>
+            </label>
+            <p className="bus-hint">Shared broadcast channel — all bus-connected agents can see messages</p>
+          </div>
+          {agent.busEnabled && (
+            <div className="form-group">
+              <label>Bus Topics (one per line)</label>
+              <textarea
+                value={agent.busTopics.join("\n")}
+                onChange={(e) => onUpdate({ ...agent, busTopics: e.target.value.split("\n").filter(Boolean) })}
+                rows={3}
+                placeholder="parameter_share&#10;clash_flag&#10;status_update"
+              />
+            </div>
           )}
 
+          {/* Mesh — free to talk to any agent */}
+          <div className="form-group">
+            <label className="bus-toggle-label">
+              <input
+                type="checkbox"
+                checked={agent.meshEnabled}
+                onChange={(e) => onUpdate({ ...agent, meshEnabled: e.target.checked })}
+              />
+              <span>Mesh (free to talk)</span>
+            </label>
+            <p className="bus-hint">Can send tasks to any agent without needing connection lines</p>
+          </div>
+
           {/* P2P Peer Configuration */}
-          {agent.role === "peer" && !agent.isRemote && (
+          {agent.role === "peer" && (
             <>
               <div className="agent-def-divider">P2P peer config</div>
               <div className="form-group">
@@ -468,7 +489,7 @@ function AgentDefPanel({
           )}
 
           {/* P2P Bidder toggle for p2p_orchestrator mode */}
-          {orchestrationMode === "p2p_orchestrator" && agent.role !== "human" && !agent.isRemote && (
+          {orchestrationMode === "p2p_orchestrator" && agent.role !== "human" && (
             <>
               <div className="agent-def-divider">P2P Orchestrator config</div>
               <div className="form-group">
@@ -507,6 +528,8 @@ function AgentDefPanel({
                   </div>
                 </>
               )}
+            </>
+          )}
             </>
           )}
         </div>
@@ -616,7 +639,6 @@ export default function AgentEditor({
 
   const [state, setState] = useState<EditorState>({
     systemName: "Multi-Agent System",
-    systemDescription: "",
     orchestrationMode: "hierarchical",
     agents: [],
     connections: [],
@@ -634,9 +656,6 @@ export default function AgentEditor({
   const [showFileManager, setShowFileManager] = useState(false);
   const [existingFiles, setExistingFiles] = useState<{ filename: string; name: string; agentCount: number; updatedAt: string }[]>([]);
   const [uploadError, setUploadError] = useState("");
-
-  // Remote instances from settings
-  const [remoteInstances, setRemoteInstances] = useState<Array<{ id: string; name: string; url: string; token: string }>>([]);
 
   // Auto Architecture state
   const [showAutoArch, setShowAutoArch] = useState(false);
@@ -717,7 +736,7 @@ export default function AgentEditor({
       responsibilities: a.responsibilities || [],
       x: a.role === "human" ? 50 : a.role === "orchestrator" ? 300 : 150 + (i % 3) * 250,
       y: a.role === "human" ? 200 : a.role === "orchestrator" ? 80 : 100 + Math.floor(i / 3) * 180,
-      color: ROLE_COLORS[a.role] || ROLE_COLORS.default,
+      color: a.type === "remote" ? ROLE_COLORS.remote : (ROLE_COLORS[a.role] || ROLE_COLORS.default),
       busEnabled: a.bus?.enabled || false,
       busTopics: a.bus?.topics || [],
       meshEnabled: a.mesh?.enabled || false,
@@ -742,7 +761,6 @@ export default function AgentEditor({
     const p2pGov = sys.system?.p2p_governance;
     setState({
       systemName: sys.system?.name || "Auto-Generated System",
-      systemDescription: sys.system?.description || "",
       orchestrationMode: sys.system?.orchestration_mode || autoArchType,
       agents,
       connections,
@@ -760,7 +778,7 @@ export default function AgentEditor({
     setAutoArchResult(null);
   };
 
-  // Load initial YAML if provided + fetch remote instances
+  // Load initial YAML if provided
   useEffect(() => {
     if (initialYaml) {
       loadFromYaml(initialYaml);
@@ -769,11 +787,6 @@ export default function AgentEditor({
       setFilename(initialFilename.replace(/\.ya?ml$/i, ""));
     }
     loadExistingFiles();
-    api.getSettings().then((s: any) => {
-      if (s.remoteInstances && Array.isArray(s.remoteInstances)) {
-        setRemoteInstances(s.remoteInstances);
-      }
-    }).catch(() => {});
   }, []);
 
   const loadExistingFiles = async () => {
@@ -833,7 +846,7 @@ export default function AgentEditor({
       await loadExistingFiles();
       // If the deleted file is currently loaded, clear the editor
       if (filename === fname.replace(/\.ya?ml$/i, "")) {
-        setState({ systemName: "Multi-Agent System", systemDescription: "", orchestrationMode: "hierarchical", agents: [], connections: [], p2pGovernance: defaultP2PGovernance });
+        setState({ systemName: "Multi-Agent System", orchestrationMode: "hierarchical", agents: [], connections: [], p2pGovernance: defaultP2PGovernance });
         setFilename("agents");
       }
     } catch (err: any) {
@@ -855,7 +868,7 @@ export default function AgentEditor({
             responsibilities: a.responsibilities || [],
             x: 100 + (i % 3) * 250,
             y: 80 + Math.floor(i / 3) * 200,
-            color: a.type === "remote" ? "#6366f1" : (ROLE_COLORS[a.role] || ROLE_COLORS.default),
+            color: a.type === "remote" ? ROLE_COLORS.remote : (ROLE_COLORS[a.role] || ROLE_COLORS.default),
             busEnabled: a.bus?.enabled || false,
             busTopics: a.bus?.topics || [],
             meshEnabled: a.mesh?.enabled || false,
@@ -917,7 +930,6 @@ export default function AgentEditor({
           const loadedP2PGov = parsed.system?.p2p_governance;
           setState({
             systemName: parsed.system?.name || "Multi-Agent System",
-            systemDescription: parsed.system?.description || "",
             orchestrationMode: parsed.system?.orchestration_mode || "hierarchical",
             agents,
             connections,
@@ -1089,7 +1101,6 @@ export default function AgentEditor({
   const buildYamlObject = () => {
     const systemDef: any = {
       name: state.systemName,
-      ...(state.systemDescription ? { description: state.systemDescription } : {}),
       orchestration_mode: state.orchestrationMode,
       communication_protocol: "structured_handoff",
       context_passing: "full_chain",
@@ -1315,13 +1326,6 @@ export default function AgentEditor({
                 <option value="p2p">P2P Swarm</option>
                 <option value="p2p_orchestrator">P2P Orchestrator</option>
               </select>
-              <textarea
-                className="system-description-input"
-                value={state.systemDescription}
-                onChange={(e) => setState((s) => ({ ...s, systemDescription: e.target.value }))}
-                placeholder="System description (used by Auto Choose Swarm)..."
-                rows={2}
-              />
             </div>
           </div>
           <div className="editor-toolbar-right">
@@ -1665,21 +1669,16 @@ export default function AgentEditor({
                     </div>
                     <div className="agent-node-body">
                       <div className="agent-node-name">{agent.name || agent.id}</div>
-                      {agent.role !== "human" && !agent.isRemote && (
-                        <div className="agent-node-model">{agent.model.split("-").slice(-2).join("-")}</div>
-                      )}
                       {agent.isRemote && (
-                        <div className="agent-node-model" style={{ color: "#6366f1", fontSize: "9px" }}>{agent.remoteInstance || "inline"}</div>
+                        <div className="agent-node-model" style={{ color: "#6366f1", fontSize: "9px" }}>{agent.remoteInstance || agent.remoteUrl || "remote"}</div>
+                      )}
+                      {!agent.isRemote && agent.role !== "human" && (
+                        <div className="agent-node-model">{agent.model.split("-").slice(-2).join("-")}</div>
                       )}
                       {agent.role === "human" && (
                         <div className="agent-node-model" style={{ color: "#e91e63", fontSize: "9px" }}>entry point</div>
                       )}
                     </div>
-                    {agent.isRemote && (
-                      <div className="agent-node-mesh-badge" style={{ background: "#6366f1" }} title={`Remote: ${agent.remoteInstance || agent.remoteUrl || "inline"}`}>
-                        &#8599; REMOTE
-                      </div>
-                    )}
                     {agent.busEnabled && (
                       <div className="agent-node-bus-badge" title={`Bus topics: ${agent.busTopics.join(", ") || "all"}`}>
                         BUS
@@ -1698,6 +1697,11 @@ export default function AgentEditor({
                     {agent.p2pBidder && state.orchestrationMode === "p2p_orchestrator" && (
                       <div className="agent-node-mesh-badge agent-node-bidder-badge" title="P2P Bidder: can bid on blackboard tasks">
                         BIDDER
+                      </div>
+                    )}
+                    {agent.isRemote && (
+                      <div className="agent-node-mesh-badge" style={{ background: "#6366f1" }} title={`Remote → ${agent.remoteInstance || agent.remoteUrl || "?"}`}>
+                        ↗ REMOTE
                       </div>
                     )}
                     {state.orchestrationMode !== "mesh" && state.orchestrationMode !== "p2p" && (
@@ -1728,7 +1732,6 @@ export default function AgentEditor({
               onClose={() => setSelectedAgent(null)}
               onDelete={() => deleteAgent(selectedAgentData.id)}
               orchestrationMode={state.orchestrationMode}
-              remoteInstances={remoteInstances}
             />
           )}
 

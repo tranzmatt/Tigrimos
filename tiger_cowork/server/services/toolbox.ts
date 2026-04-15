@@ -2,14 +2,15 @@ import fs from "fs";
 import path from "path";
 import { exec, spawn as spawnChild } from "child_process";
 import { promisify } from "util";
+import { AsyncLocalStorage } from "async_hooks";
 import yaml from "js-yaml";
 import { runPython } from "./python";
 import { getSettings, appendAgentHistory, flushAgentHistory } from "./data";
-import { remoteTask, RemoteInstance } from "./remote";
 import { getMcpTools, callMcpTool, isMcpTool } from "./mcp";
+import { remoteTask, RemoteInstance } from "./remote";
 import {
   tcpOpen, tcpSend, tcpRead, tcpClose,
-  busPublish, busSubscribe, busHistory, busGet, busWaitForMessage, busLoadHistory,
+  busPublish, busSubscribe, busHistory, busGet, busWaitForMessage, busWaitForAny, busLoadHistory,
   queueEnqueue, queueDequeue, queuePeek, queueDepth, queueDrain,
   getProtocolStatus, cleanupSessionProtocols,
   blackboardPropose, blackboardBid, blackboardAward,
@@ -204,36 +205,126 @@ const spawnSubagentTool = {
   type: "function" as const,
   function: {
     name: "spawn_subagent",
-    description: "Spawn a predefined agent from the YAML architecture to handle a sub-task. You MUST select an agent by agentId from the available agents list. Each agent has a specific role, persona, and responsibility — match the task to the best-fit agent. The agent runs autonomously with its own tool-calling loop and returns results when done.",
+    description: "Spawn a sub-agent to handle a specific sub-task independently. The sub-agent gets its own tool-calling loop and returns results when done. Use this for: parallel research, breaking complex tasks into parts, or delegating specialized work. Each sub-agent runs autonomously with full tool access.",
     parameters: {
       type: "object",
       properties: {
-        task: { type: "string", description: "Clear description of the sub-task for the agent to complete" },
-        agentId: { type: "string", description: "REQUIRED — agent ID from the YAML config. Must match one of the available agents." },
-        label: { type: "string", description: "Short label for this agent task (e.g. 'research-api', 'generate-chart')" },
-        context: { type: "string", description: "Additional context or data the agent needs" },
+        task: { type: "string", description: "Clear description of the sub-task for the sub-agent to complete" },
+        label: { type: "string", description: "Short label for this sub-agent (e.g. 'research-api', 'generate-chart')" },
+        context: { type: "string", description: "Optional additional context or data the sub-agent needs" },
+        agentId: { type: "string", description: "Optional agent ID from manual YAML config to use specific agent definition" },
       },
-      required: ["task", "agentId"],
+      required: ["task"],
     },
   },
 };
 
-// Remote instance task delegation tool
+// --- Auto Create Architecture: create_architecture tool ---
+const createArchitectureTool = {
+  type: "function" as const,
+  function: {
+    name: "create_architecture",
+    description: "Analyze the user's task and create an appropriate multi-agent architecture to handle it. This generates a YAML agent configuration, saves it, and boots all agents in realtime mode. Call this FIRST before doing any work. Choose the best architecture type for the task.",
+    parameters: {
+      type: "object",
+      properties: {
+        description: { type: "string", description: "Description of the task/goal that the agent team needs to accomplish" },
+        architectureType: {
+          type: "string",
+          enum: ["hierarchical", "flat", "mesh", "hybrid", "pipeline", "p2p"],
+          description: "Architecture type: hierarchical (orchestrator delegates), flat (direct control), mesh (free collaboration), hybrid (orchestrator + mesh workers), pipeline (sequential chain), p2p (peer swarm with blackboard)",
+        },
+        agentCount: { type: "string", description: "Number of agents to create, or 'auto' to let AI decide" },
+      },
+      required: ["description"],
+    },
+  },
+};
+
+// Track auto-created architecture filename per session
+const autoCreatedArchitectures = new Map<string, string>(); // sessionId → filename
+
+export function getAutoCreatedArchitecture(sessionId: string): string | undefined {
+  return autoCreatedArchitectures.get(sessionId);
+}
+
+export function clearAutoCreatedArchitecture(sessionId: string) {
+  autoCreatedArchitectures.delete(sessionId);
+}
+
+// --- Auto Choose Swarm: select_swarm tool ---
+const selectSwarmTool = {
+  type: "function" as const,
+  function: {
+    name: "select_swarm",
+    description: "Select the best agent swarm configuration for the current task. You MUST call this FIRST before doing any work. Review the available swarms and pick the one whose description and agents best match the user's request. After selection, agent tools will be injected for you to use.",
+    parameters: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "The YAML filename to select (e.g. 'research_team.yaml')" },
+        reason: { type: "string", description: "Brief explanation of why this swarm is the best fit" },
+      },
+      required: ["filename"],
+    },
+  },
+};
+
+// Get summary of all available swarm configs for auto_swarm mode
+export function getAutoSwarmConfigSummary(): string | null {
+  const agentsDir = path.resolve("data/agents");
+  if (!fs.existsSync(agentsDir)) return null;
+  const files = fs.readdirSync(agentsDir).filter(f => f.endsWith(".yaml") || f.endsWith(".yml"));
+  if (files.length === 0) return null;
+
+  let summary = `\n\nAVAILABLE SWARM CONFIGURATIONS:\n`;
+  summary += `You MUST call select_swarm first to pick the best config for the user's task.\n\n`;
+  for (const f of files) {
+    try {
+      const content = fs.readFileSync(path.join(agentsDir, f), "utf8");
+      const parsed = yaml.load(content) as AgentSystemConfig;
+      if (!parsed?.agents) continue;
+      const name = parsed.system?.name || f.replace(/\.ya?ml$/, "");
+      const desc = parsed.system?.description || "";
+      const mode = parsed.system?.orchestration_mode || "hierarchical";
+      const agents = (parsed.agents || [])
+        .filter((a: AgentConfig) => a.role !== "human")
+        .map((a: AgentConfig) => `${a.name} (${a.role})`)
+        .join(", ");
+      summary += `- "${f}": ${name} [${mode}]${desc ? ` — ${desc}` : ""}\n  Agents: ${agents}\n`;
+    } catch {}
+  }
+  return summary;
+}
+
+// Track which swarm was selected per session for auto_swarm mode
+const autoSwarmSelections = new Map<string, string>(); // sessionId → filename
+
+export function setAutoSwarmSelection(sessionId: string, filename: string) {
+  autoSwarmSelections.set(sessionId, filename);
+}
+
+export function getAutoSwarmSelection(sessionId: string): string | undefined {
+  return autoSwarmSelections.get(sessionId);
+}
+
+export function clearAutoSwarmSelection(sessionId: string) {
+  autoSwarmSelections.delete(sessionId);
+}
+
+// ─── Remote Task Tool ───
+
 const remoteTaskTool = {
   type: "function" as const,
   function: {
     name: "remote_task",
-    description: "Delegate a task to a remote Tiger Cowork instance running on another machine. Use this to offload work to a cloud PC or any reachable Tiger Cowork server. The remote agent will process the task using its own LLM and tools, and return the result.",
+    description: "Delegate a task to a Tiger Cowork instance running on another machine. The remote instance processes the task with its own LLM and tools, then returns the result. Use this for offloading work to a cloud PC, lab server, or any peer machine running Tiger Cowork.",
     parameters: {
       type: "object",
       properties: {
-        instance: {
-          type: "string",
-          description: "Name or ID of a saved remote instance (from Settings > Remote Instances), OR an inline JSON string with {url, token} for ad-hoc use (e.g. '{\"url\":\"http://1.2.3.4:3001\",\"token\":\"abc123\"}').",
-        },
-        task: { type: "string", description: "The task to delegate to the remote agent" },
-        idle_timeout: { type: "number", description: "Seconds of silence (no new messages) before aborting (default: 60)" },
-        max_timeout: { type: "number", description: "Hard cap in seconds regardless of activity (default: 1800)" },
+        instance: { type: "string", description: "Remote instance name/id (from Settings > Remote Instances), or inline JSON {url, token}" },
+        task: { type: "string", description: "The task to send to the remote instance" },
+        idle_timeout: { type: "number", description: "Seconds to wait with no activity before aborting (default: 60)" },
+        max_timeout: { type: "number", description: "Maximum seconds to wait for a result (default: 1800)" },
       },
       required: ["instance", "task"],
     },
@@ -518,98 +609,6 @@ export function getProtocolToolsForAgent(agentDef?: AgentConfig | null, connecti
   return tools;
 }
 
-// --- Auto Create Architecture: create_architecture tool ---
-const createArchitectureTool = {
-  type: "function" as const,
-  function: {
-    name: "create_architecture",
-    description: "Analyze the user's task and create an appropriate multi-agent architecture to handle it. This generates a YAML agent configuration, saves it, and boots all agents in realtime mode. Call this FIRST before doing any work. Choose the best architecture type for the task.",
-    parameters: {
-      type: "object",
-      properties: {
-        description: { type: "string", description: "Description of the task/goal that the agent team needs to accomplish" },
-        architectureType: {
-          type: "string",
-          enum: ["hierarchical", "flat", "mesh", "hybrid", "pipeline", "p2p"],
-          description: "Architecture type: hierarchical (orchestrator delegates), flat (direct control), mesh (free collaboration), hybrid (orchestrator + mesh workers), pipeline (sequential chain), p2p (peer swarm with blackboard)",
-        },
-        agentCount: { type: "string", description: "Number of agents to create, or 'auto' to let AI decide" },
-      },
-      required: ["description"],
-    },
-  },
-};
-
-// Track auto-created architecture filename per session
-const autoCreatedArchitectures = new Map<string, string>(); // sessionId → filename
-
-export function getAutoCreatedArchitecture(sessionId: string): string | undefined {
-  return autoCreatedArchitectures.get(sessionId);
-}
-
-export function clearAutoCreatedArchitecture(sessionId: string) {
-  autoCreatedArchitectures.delete(sessionId);
-}
-
-// --- Auto Choose Swarm: select_swarm tool ---
-const selectSwarmTool = {
-  type: "function" as const,
-  function: {
-    name: "select_swarm",
-    description: "Select the best agent swarm configuration for the current task. You MUST call this FIRST before doing any work. Review the available swarms and pick the one whose description and agents best match the user's request. After selection, agent tools will be injected for you to use.",
-    parameters: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "The YAML filename to select (e.g. 'research_team.yaml')" },
-        reason: { type: "string", description: "Brief explanation of why this swarm is the best fit" },
-      },
-      required: ["filename"],
-    },
-  },
-};
-
-// Get summary of all available swarm configs for auto_swarm mode
-export function getAutoSwarmConfigSummary(): string | null {
-  const agentsDir = path.resolve("data/agents");
-  if (!fs.existsSync(agentsDir)) return null;
-  const files = fs.readdirSync(agentsDir).filter(f => f.endsWith(".yaml") || f.endsWith(".yml"));
-  if (files.length === 0) return null;
-
-  let summary = `\n\nAVAILABLE SWARM CONFIGURATIONS:\n`;
-  summary += `You MUST call select_swarm first to pick the best config for the user's task.\n\n`;
-  for (const f of files) {
-    try {
-      const content = fs.readFileSync(path.join(agentsDir, f), "utf8");
-      const parsed = yaml.load(content) as AgentSystemConfig;
-      if (!parsed?.agents) continue;
-      const name = parsed.system?.name || f.replace(/\.ya?ml$/, "");
-      const desc = parsed.system?.description || "";
-      const mode = parsed.system?.orchestration_mode || "hierarchical";
-      const agents = (parsed.agents || [])
-        .filter((a: AgentConfig) => a.role !== "human")
-        .map((a: AgentConfig) => `${a.name} (${a.role})`)
-        .join(", ");
-      summary += `- "${f}": ${name} [${mode}]${desc ? ` — ${desc}` : ""}\n  Agents: ${agents}\n`;
-    } catch {}
-  }
-  return summary;
-}
-
-// Track which swarm was selected per session for auto_swarm mode
-const autoSwarmSelections = new Map<string, string>(); // sessionId/taskId → filename
-
-export function setAutoSwarmSelection(sessionId: string, filename: string) {
-  autoSwarmSelections.set(sessionId, filename);
-}
-
-export function getAutoSwarmSelection(sessionId: string): string | undefined {
-  return autoSwarmSelections.get(sessionId);
-}
-
-export function clearAutoSwarmSelection(sessionId: string) {
-  autoSwarmSelections.delete(sessionId);
-}
-
 // Dynamic tools getter: built-in + MCP tools + conditional OpenRouter search + sub-agent
 export async function getTools(opts?: { excludeSubagent?: boolean; sessionId?: string }) {
   const settings = await getSettings();
@@ -629,16 +628,14 @@ export async function getTools(opts?: { excludeSubagent?: boolean; sessionId?: s
         tools.push(sendTaskTool, waitResultTool, checkAgentsTool);
         tools.push(createArchitectureTool); // keep for recreating if needed
       } else {
-        // No architecture yet — return ONLY create_architecture (no builtins)
-        // so the LLM is forced to create the architecture first
+        // No architecture yet — return ONLY create_architecture so LLM is forced to create first
         return [createArchitectureTool, ...getMcpTools()];
       }
     } else if (settings.subAgentMode === "auto_swarm") {
       // Check if a swarm has already been selected for this session
       const selectedFile = opts?.sessionId ? getAutoSwarmSelection(opts.sessionId) : undefined;
       if (selectedFile) {
-        // Swarm selected — agents are running in realtime mode.
-        // Provide send_task/wait_result/check_agents for coordination (same as realtime mode).
+        // Swarm selected — agents are running in realtime mode
         tools.push(sendTaskTool, waitResultTool, checkAgentsTool);
         tools.push(selectSwarmTool); // keep for switching swarms
       } else {
@@ -646,67 +643,17 @@ export async function getTools(opts?: { excludeSubagent?: boolean; sessionId?: s
         tools.push(selectSwarmTool);
       }
     } else {
-      // Dynamically build spawn tools from YAML config — one tool per agent
-      if (settings.subAgentConfigFile) {
-        const config = loadAgentConfig(settings.subAgentConfigFile);
-        const agents = (config?.agents || []).filter((a: AgentConfig) => a.role !== "human" && a.role !== "orchestrator");
-        if (agents.length > 0) {
-          // Create a dedicated spawn tool for each agent — LLM cannot invent agents
-          for (const agent of agents) {
-            const desc = [
-              agent.persona || "",
-              agent.responsibilities?.length ? `Responsibilities: ${agent.responsibilities.join("; ")}` : "",
-            ].filter(Boolean).join(". ");
-            tools.push({
-              type: "function" as const,
-              function: {
-                name: `spawn_${agent.id}`,
-                description: `Spawn agent "${agent.name}" (${agent.role}) to handle a task. ${desc}`,
-                parameters: {
-                  type: "object",
-                  properties: {
-                    task: { type: "string", description: "Clear description of the sub-task for this agent to complete" },
-                    context: { type: "string", description: "Additional context or data the agent needs" },
-                  },
-                  required: ["task"],
-                },
-              },
-            });
-          }
-        } else {
-          tools.push(spawnSubagentTool);
-        }
-      } else {
-        tools.push(spawnSubagentTool);
-      }
+      tools.push(spawnSubagentTool);
     }
   }
   if (settings.subAgentEnabled) {
     tools.push(...protocolTools);
   }
+  // Remote task tool is available whenever remote instances are configured
   if (settings.remoteInstances && settings.remoteInstances.length > 0) {
-    // Build dynamic description with available instances and responsibilities
-    const instanceList = settings.remoteInstances.map((inst: any) => {
-      let line = `  - "${inst.name}"`;
-      if (inst.persona) line += ` (${inst.persona})`;
-      if (inst.responsibility) line += ` — Responsibility: ${inst.responsibility}`;
-      return line;
-    }).join("\n");
-    const dynTool = JSON.parse(JSON.stringify(remoteTaskTool));
-    dynTool.function.description = remoteTaskTool.function.description +
-      `\n\nAvailable remote instances:\n${instanceList}\n\nHOW TO CHOOSE: Match the task to each instance's Responsibility first. If no clear match, use Persona (expertise/skills). If only one instance exists, use that one.`;
-    tools.push(dynTool);
+    tools.push(remoteTaskTool);
   }
   return [...tools, ...getMcpTools()];
-}
-
-// Get tools after auto_swarm selection — provides realtime coordination tools
-export async function getToolsAfterSwarmSelection(filename: string): Promise<any[]> {
-  const config = loadAgentConfig(filename);
-  if (!config) return await getTools();
-  // After swarm selection, agents are live in realtime mode.
-  // Give the orchestrator LLM the same tools as realtime mode: send_task/wait_result.
-  return await getToolsForRealtimeOrchestrator();
 }
 
 // Get manual agent config summary for system prompt injection
@@ -736,7 +683,6 @@ export async function getManualAgentConfigSummary(sessionId?: string): Promise<s
   if (settings.subAgentMode === "auto_swarm") {
     const selectedFile = sessionId ? getAutoSwarmSelection(sessionId) : undefined;
     if (selectedFile) {
-      // Swarm already selected and running in realtime — show realtime-style summary
       const config = loadAgentConfig(selectedFile);
       if (config) {
         const mode = config.system?.orchestration_mode || "hierarchical";
@@ -759,22 +705,14 @@ export async function getManualAgentConfigSummary(sessionId?: string): Promise<s
   if (mode === "p2p") {
     summary += `P2P governance: ${config.system?.p2p_governance?.consensus_mechanism || "contract_net"} — coordination via blackboard.\n`;
   }
-  const remoteInstances = settings.remoteInstances || [];
   for (const a of config.agents || []) {
-    const flags = [a.bus?.enabled && "bus", a.mesh?.enabled && "mesh", a.role === "peer" && "peer", a.type === "remote" && `REMOTE → ${a.remote_instance || a.remote_url || "inline"}`].filter(Boolean).join(",");
-    let persona = a.persona || "";
-    let responsibility = "";
-    // For remote agents, use persona/responsibility from Settings if not defined in YAML
-    if (a.type === "remote" && a.remote_instance) {
-      const ri = remoteInstances.find((i: any) => i.id === a.remote_instance || i.name === a.remote_instance);
-      if (ri) {
-        if (!persona && ri.persona) persona = ri.persona;
-        if (ri.responsibility) responsibility = ri.responsibility;
-      }
-    }
-    let desc = `- ${a.id} ("${a.name}"): ${a.role}${flags ? ` [${flags}]` : ""}${persona ? ` — ${persona}` : ""}`;
-    if (responsibility) desc += ` | Responsibility: ${responsibility}`;
-    summary += desc + "\n";
+    const flags = [
+      a.bus?.enabled && "bus",
+      a.mesh?.enabled && "mesh",
+      a.role === "peer" && "peer",
+      a.type === "remote" && `REMOTE → ${a.remote_instance || a.remote_url || "?"}`,
+    ].filter(Boolean).join(",");
+    summary += `- ${a.id} ("${a.name}"): ${a.role}${flags ? ` [${flags}]` : ""}${a.persona ? ` — ${a.persona}` : ""}\n`;
   }
 
   if (config.workflow?.sequence && config.workflow.sequence.length > 0) {
@@ -785,11 +723,11 @@ export async function getManualAgentConfigSummary(sessionId?: string): Promise<s
     }
   }
 
-  const hasRemote = (config.agents || []).some(a => a.type === "remote");
+  const hasRemote = (config.agents || []).some((a: AgentConfig) => a.type === "remote");
+  summary += `\nSpawn agents with agentId parameter. Follow workflow order. Synthesize results into a clear response with headings.\n`;
   if (hasRemote) {
-    summary += `\nRemote agents run on another machine — spawn them normally with agentId. They delegate via the remote bridge automatically.\n`;
+    summary += `Note: Remote agents run on another machine — spawn them normally with agentId. They are dispatched automatically.\n`;
   }
-  summary += `\nSpawn agents with agentId parameter. Match each sub-task to the agent whose responsibility and persona best fit. Follow workflow order. Synthesize results into a clear response with headings.\n`;
   return summary;
 }
 
@@ -808,7 +746,6 @@ export async function getToolsForSubagent(
     tools.push(openRouterSearchTool);
   }
   const isManual = settings.subAgentMode === "manual";
-  const isAutoSwarm = settings.subAgentMode === "auto_swarm";
   if (settings.subAgentEnabled) {
     if (isManual) {
       // Manual mode: no depth limit — YAML structure is the boundary.
@@ -819,9 +756,6 @@ export async function getToolsForSubagent(
       const hasMesh = agentDef?.mesh?.enabled === true || systemConfig?.system?.orchestration_mode === "mesh";
       const hasP2P = agentDef?.role === "peer" || systemConfig?.system?.orchestration_mode === "p2p";
       if (hasDownstream || hasMesh || hasP2P) tools.push(spawnSubagentTool);
-    } else if (isAutoSwarm) {
-      // Auto swarm mode: agents run in realtime mode with YAML architecture.
-      // No spawn tools needed — coordination uses send_task/wait_result via the bus.
     } else {
       // Auto mode: depth limit applies
       if (currentDepth < maxDepth) tools.push(spawnSubagentTool);
@@ -912,7 +846,7 @@ async function webSearch(args: { query: string }): Promise<any> {
   try {
     const wikiRes = await fetch(
       `https://en.wikipedia.org/w/api.php?action=query&format=json&list=search&srsearch=${encodeURIComponent(query)}&srlimit=3`,
-      { headers: { "User-Agent": "TigerCowork/1.0" } }
+      { headers: { "User-Agent": "Tigrimos/1.0" } }
     );
     const wikiData = await wikiRes.json();
     for (const item of (wikiData.query?.search || [])) {
@@ -936,7 +870,7 @@ async function fetchUrl(args: { url: string; method?: string }): Promise<any> {
   try {
     const response = await fetch(url, {
       method: method || "GET",
-      headers: { "User-Agent": "TigerCowork/1.0" },
+      headers: { "User-Agent": "Tigrimos/1.0" },
     });
     const contentType = response.headers.get("content-type") || "";
     let data: any;
@@ -958,7 +892,7 @@ async function runPythonTool(args: { code: string }, _retryCount: number = 0): P
   const settings = await getSettings();
   const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
   const timeout = settings.pythonTimeout || 300000; // 5 minutes default
-  const result = await runPython(args.code, sandboxDir, timeout, _currentProjectWorkingFolder);
+  const result = await runPython(args.code, sandboxDir, timeout, getCurrentProjectWorkingFolder());
 
   // If Python errored, provide structured error info to help the LLM fix the code
   if (result.exitCode !== 0) {
@@ -1088,7 +1022,7 @@ async function runPythonTool(args: { code: string }, _retryCount: number = 0): P
 async function runReactTool(args: { code: string; title?: string; dependencies?: string[] }): Promise<any> {
   const settings = await getSettings();
   const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
-  const outputDir = _currentProjectWorkingFolder || path.join(sandboxDir, "output_file");
+  const outputDir = getCurrentProjectWorkingFolder() || path.join(sandboxDir, "output_file");
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
   let code = args.code || "";
@@ -1193,7 +1127,7 @@ function readFileTool(args: { path?: string; file?: string; filepath?: string })
 async function writeFileTool(args: { path: string; content: string; append?: boolean }): Promise<any> {
   const settings = await getSettings();
   const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
-  const outputDir = _currentProjectWorkingFolder || path.join(sandboxDir, "output_file");
+  const outputDir = getCurrentProjectWorkingFolder() || path.join(sandboxDir, "output_file");
   const target = path.resolve(outputDir, args.path);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   if (args.append) {
@@ -1487,6 +1421,10 @@ interface AgentConfig {
   responsibilities: string[];
   constraints?: string[];
   tools_allowed?: string[];
+  type?: "remote";              // remote = delegate to another Tiger Cowork instance
+  remote_instance?: string;     // references a saved Remote Instance id/name in settings
+  remote_url?: string;          // inline URL fallback (no saved instance needed)
+  remote_token?: string;        // inline token fallback
   bus?: {
     enabled: boolean;
     topics?: string[];
@@ -1499,11 +1437,6 @@ interface AgentConfig {
     confidence_domains?: string[];   // domains this agent is confident in
     reputation_score?: number;       // 0-1, initial reputation
   };
-  // Remote agent fields
-  type?: "remote";
-  remote_instance?: string;   // saved instance id/name
-  remote_url?: string;        // inline URL fallback
-  remote_token?: string;      // inline token (for ad-hoc use)
 }
 
 interface P2PGovernanceConfig {
@@ -1519,7 +1452,7 @@ interface P2PGovernanceConfig {
 interface AgentSystemConfig {
   system: {
     name: string;
-    description?: string;  // one-line summary of what this swarm does
+    description?: string;
     orchestration_mode: string;  // hierarchical, flat, mesh, hybrid, pipeline, p2p, p2p_orchestrator
     p2p_governance?: P2PGovernanceConfig;
   };
@@ -1558,7 +1491,7 @@ export async function runClaudeCodeAgent(
   } = {},
 ): Promise<{ content: string; toolResults?: any[]; toolCalls?: string[] }> {
   const settings = await getSettings();
-  const workDir = opts.workingDir || _currentProjectWorkingFolder || settings.sandboxDir || process.cwd();
+  const workDir = opts.workingDir || getCurrentProjectWorkingFolder() || settings.sandboxDir || process.cwd();
   const timeout = opts.timeout || 300_000; // 5 min default
   const maxTurns = opts.maxTurns || 25;
 
@@ -1587,10 +1520,7 @@ export async function runClaudeCodeAgent(
   return new Promise((resolve, reject) => {
     const child = spawnChild("claude", cliArgs, {
       cwd: workDir,
-      env: {
-        ...process.env,
-        PATH: `/root/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/venv/bin:${process.env.PATH || ""}`,
-      },
+      env: { ...process.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1744,7 +1674,7 @@ export async function runCodexAgent(
   } = {},
 ): Promise<{ content: string; toolResults?: any[]; toolCalls?: string[] }> {
   const settings = await getSettings();
-  const workDir = opts.workingDir || _currentProjectWorkingFolder || settings.sandboxDir || process.cwd();
+  const workDir = opts.workingDir || getCurrentProjectWorkingFolder() || settings.sandboxDir || process.cwd();
   const timeout = opts.timeout || 300_000;
 
   // Build the prompt
@@ -1771,10 +1701,7 @@ export async function runCodexAgent(
   return new Promise((resolve, reject) => {
     const child = spawnChild("codex", cliArgs, {
       cwd: workDir,
-      env: {
-        ...process.env,
-        PATH: `/root/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/venv/bin:${process.env.PATH || ""}`,
-      },
+      env: { ...process.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1980,12 +1907,21 @@ function getManualAgentPrompt(agentDef: AgentConfig, systemConfig: AgentSystemCo
       return a ? `  - ${a.id} ("${a.name}", role: ${a.role})` : `  - ${id}`;
     }).join("\n") || "  (none)"}\n`;
     prompt += `\nP2P Bidder agents:\n${bidderAgents || "  (none)"}\n`;
-    prompt += `\nP2P BIDDING WORKFLOW:\n`;
+    prompt += `\nP2P BIDDING WORKFLOW (per task):\n`;
     prompt += `  1. bb_propose("task description") — post the job on the blackboard (bidders are notified via bus)\n`;
     prompt += `  2. bb_read(task_id) — check for incoming bids\n`;
     prompt += `  3. bb_award(task_id, orchestrator_scores=[...]) — review bids via bb_read (includes bidder profiles). Provide YOUR score (0-1) for each bidder. Winner = 50% bidder confidence + 50% your score.\n`;
     prompt += `  4. spawn_subagent({agentId: "winner_id", task: "..."}) — SEND the task to the winner so they actually execute it\n`;
     prompt += `  5. Collect the result from spawn_subagent, then bb_complete if needed\n`;
+    prompt += `\nPARALLEL EXECUTION STRATEGY (CRITICAL — use this for multi-task work):\n`;
+    prompt += `  When the user's request can be decomposed into multiple sub-tasks:\n`;
+    prompt += `  Step A: bb_propose ALL sub-tasks first (call bb_propose multiple times in quick succession).\n`;
+    prompt += `  Step B: Poll bb_read to check bids across ALL proposed tasks. Award each task as bids come in.\n`;
+    prompt += `  Step C: spawn_subagent to each winner as soon as they are awarded — do NOT wait for one task to finish before sending the next.\n`;
+    prompt += `  Step D: Collect results from ALL agents.\n`;
+    prompt += `  CRITICAL: Do NOT block waiting for one agent's result before proposing/awarding/sending other tasks.\n`;
+    const bidTimeoutVal = (systemConfig.system?.p2p_governance as any)?.bid_timeout_seconds || 30;
+    prompt += `  The bid timeout is ${bidTimeoutVal}s — if no bids arrive within that time, the system auto-awards to the best available bidder.\n`;
     prompt += `\nRULES:\n- Use spawn_subagent for direct delegation to connected agents\n`;
     prompt += `- Use the P2P bidding workflow above when the best agent isn't clear\n`;
     prompt += `- IMPORTANT: After bb_award, you MUST spawn_subagent to the winner — the award alone does NOT send the task\n`;
@@ -2086,7 +2022,7 @@ export async function spawnSubagent(
   if (settings.subAgentMode === "manual" && settings.subAgentConfigFile) {
     const systemConfig = loadAgentConfig(settings.subAgentConfigFile);
     if (systemConfig) {
-      const callerId = _currentAgentId;
+      const callerId = getCurrentAgentId();
       const targetId = args.agentId;
 
       if (!targetId) {
@@ -2130,7 +2066,7 @@ export async function spawnSubagent(
     }
   }
 
-  // Check concurrent limit (global across ALL depths to prevent exponential flooding)
+  // Check concurrent limit
   const maxConcurrent = settings.subAgentMaxConcurrent || 3;
   const runningCount = Array.from(activeSubagents.values()).filter(s => s.status === "running").length;
   if (runningCount >= maxConcurrent) {
@@ -2140,7 +2076,7 @@ export async function spawnSubagent(
   const agentId = args.agentId || `subagent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const subagentId = agentId;
   const label = args.label || "subagent";
-  const timeout = (settings.subAgentTimeout || 300) * 1000; // default 5 minutes
+  const timeout = (settings.subAgentTimeout || 120) * 1000; // default 120s
 
   const run: SubagentRun = {
     id: subagentId,
@@ -2191,58 +2127,48 @@ export async function spawnSubagent(
     resolvedConnections = systemConfig?.connections;
     resolvedSystemConfig = systemConfig;
 
-    // --- Remote agent: delegate to Machine B via HTTP bridge ---
-    if (agentDef?.type === "remote") {
-      const instances = settings.remoteInstances || [];
+    if (agentDef && agentDef.type === "remote") {
+      // ─── Remote agent: delegate to another Tiger Cowork instance ───
+      console.log(`[SubAgent:${label}] Remote agent — delegating to remote instance`);
       let instance: RemoteInstance | undefined;
-
-      if (agentDef.remote_instance) {
-        instance = instances.find((i: RemoteInstance) => i.id === agentDef.remote_instance || i.name === agentDef.remote_instance);
+      if (agentDef.remote_instance && settings.remoteInstances) {
+        instance = settings.remoteInstances.find(
+          (ri) => ri.id === agentDef.remote_instance || ri.name === agentDef.remote_instance
+        );
       }
-      if (!instance && agentDef.remote_url && agentDef.remote_token) {
-        instance = { id: "inline", name: agentDef.id, url: agentDef.remote_url, token: agentDef.remote_token };
+      if (!instance && agentDef.remote_url) {
+        instance = { id: agentDef.id, name: agentDef.name, url: agentDef.remote_url, token: agentDef.remote_token || "" };
       }
       if (!instance) {
-        const result = { ok: false, error: `Remote agent "${agentDef.id}" has no resolvable instance. Configure remote_instance in YAML or add the instance in Settings > Remote Instances.` };
-        activeSubagents.delete(subagentId);
-        return result;
+        const run = activeSubagents.get(subagentId);
+        if (run) { run.status = "error"; run.result = `Remote instance "${agentDef.remote_instance}" not found`; }
+        return { ok: false, error: `Remote instance "${agentDef.remote_instance}" not found in settings` };
       }
-
-      console.log(`[SubAgent:${label}] Delegating to remote instance "${instance.name}" (${instance.url})`);
+      const fullTask = args.context ? `${args.task}\n\nADDITIONAL CONTEXT:\n${args.context}` : args.task;
+      const result = await remoteTask(instance, fullTask, { signal });
+      const run = activeSubagents.get(subagentId);
+      if (run) {
+        run.status = result.ok ? "completed" : "error";
+        run.result = result.ok ? result.result : result.error;
+        run.completedAt = new Date().toISOString();
+      }
+      if (parentSessionId) {
+        appendAgentHistory(parentSessionId, "spawn.jsonl", {
+          id: subagentId, label, status: result.ok ? "done" : "error",
+          result: (result.ok ? result.result : result.error)?.slice(0, 2000),
+          finishedAt: new Date().toISOString(),
+        }).catch(() => {});
+      }
       if (subagentStatusCallback) {
-        subagentStatusCallback({ sessionId: parentSessionId, status: "subagent_tool", subagentId, label, depth: currentDepth + 1, tool: "remote_task", remote: true });
-      }
-      try {
-        const remoteSettings = await getSettings();
-        const result = await remoteTask(instance, args.task, {
-          pollIntervalMs: (remoteSettings.remotePollInterval ?? 2) * 1000,
-          idleTimeoutMs: (remoteSettings.remoteIdleTimeout ?? 60) * 1000,
-          maxTimeoutMs: (remoteSettings.remoteMaxTimeout ?? 1800) * 1000,
-          signal,
-          onProgress: (newEntries) => {
-            if (subagentStatusCallback) {
-              for (const entry of newEntries) {
-                if (/Still working\.\.\./.test(entry)) continue;
-                subagentStatusCallback({ sessionId: parentSessionId, status: "subagent_tool", subagentId, label, depth: currentDepth + 1, tool: "remote_progress", content: entry, remote: true });
-              }
-            }
-          },
+        subagentStatusCallback({
+          sessionId: parentSessionId,
+          status: result.ok ? "subagent_done" : "subagent_error",
+          subagentId, label,
+          result: (result.ok ? result.result : result.error)?.slice(0, 500),
         });
-        if (subagentStatusCallback) {
-          subagentStatusCallback({ sessionId: parentSessionId, status: "subagent_done", subagentId, label, depth: currentDepth + 1, remote: true });
-        }
-        activeSubagents.delete(subagentId);
-        return result;
-      } catch (err: any) {
-        if (subagentStatusCallback) {
-          subagentStatusCallback({ sessionId: parentSessionId, status: "subagent_done", subagentId, label, depth: currentDepth + 1, remote: true });
-        }
-        activeSubagents.delete(subagentId);
-        return { ok: false, error: err.message };
       }
-    }
-
-    if (agentDef && systemConfig) {
+      return result;
+    } else if (agentDef && systemConfig) {
       resolvedAgentDef = agentDef;
       subPrompt = getManualAgentPrompt(agentDef, systemConfig);
       subPrompt += `\nYOUR TASK:\n${args.task}\n`;
@@ -2315,11 +2241,18 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
   // Error recovery instructions for all sub-agents
   subPrompt += `\n\nERROR RECOVERY: If a tool call fails (Python error, missing package, file not found), do NOT give up. Analyze the error, fix the issue (install packages, correct paths, fix syntax), and retry. If the same approach fails twice, try a different method. Always complete the task.`;
 
-  // Set agent context so protocol tools know who we are — preserve project folder
-  const prevAgentId = _currentAgentId;
-  const prevProjectFolder = _currentProjectWorkingFolder;
+  // Build agent context — scoped via AsyncLocalStorage so parallel spawns don't
+  // race on module-level state. The parent's project folder is captured from
+  // the current ALS scope (or fallback) before we enter the new scope.
   const subTaskId = `subagent-${agentId}-${Date.now()}`;
-  setCallContext(subTaskId, parentSessionId, currentDepth + 1, agentId, _currentProjectWorkingFolder);
+  const parentProjectFolder = getCurrentProjectWorkingFolder();
+  const subCallCtx: CallContext = {
+    parentSessionId,
+    subagentDepth: currentDepth + 1,
+    agentId,
+    projectWorkingFolder: parentProjectFolder,
+  };
+  setCallContext(subTaskId, parentSessionId, currentDepth + 1, agentId, parentProjectFolder);
 
   try {
     const callAgent = await getSubagentCaller();
@@ -2335,12 +2268,17 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
 
     // Build filtered tool set for this sub-agent
     const subagentTools = await getToolsForSubagent(currentDepth + 1, resolvedAgentDef, resolvedConnections, resolvedSystemConfig);
+    const lastBBSubArgs: Record<string, any> = {};
 
     // Use agent-specific model if defined, fall back to system sub-agent model override
     const agentModel = resolvedAgentDef?.model || subModel || undefined;
 
     let result: any;
 
+    // Run the LLM/CLI call inside an ALS scope so every downstream tool
+    // invocation (via callTool) and helper read (runPython, etc.) resolves
+    // the correct per-task context even when parallel subagents are running.
+    result = await runWithCallContext(subCallCtx, async () => {
     if (isLocalCliAgent(agentModel)) {
       // --- Local CLI agent (Claude Code or Codex): bypass LLM tool loop ---
       const isCodex = isCodexModel(agentModel);
@@ -2348,8 +2286,8 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
       const runAgent = isCodex ? runCodexAgent : runClaudeCodeAgent;
       const cliSubModel = extractCliSubModel(agentModel);
       console.log(`[SubAgent:${label}] Using ${cliName} CLI as agent backend${cliSubModel ? ` (model: ${cliSubModel})` : ""}`);
-      result = await runAgent(args.task, {
-        workingDir: _currentProjectWorkingFolder || settings.sandboxDir,
+      return await runAgent(args.task, {
+        workingDir: getCurrentProjectWorkingFolder() || settings.sandboxDir,
         systemPrompt: subPrompt,
         signal: combinedSignal,
         timeout,
@@ -2358,6 +2296,7 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
         onToolCall: (name: string, toolArgs: any) => {
           run.toolCalls.push(name);
           console.log(`[SubAgent:${label}] ${cliName} Tool: ${name}`);
+          if (name.startsWith("bb_")) lastBBSubArgs[name] = toolArgs;
           if (subagentStatusCallback) {
             subagentStatusCallback({
               sessionId: parentSessionId,
@@ -2365,19 +2304,21 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
               subagentId,
               label,
               tool: name,
+              args: toolArgs,
             });
           }
         },
       });
     } else {
       // --- Standard LLM API agent ---
-      result = await callAgent(
+      return await callAgent(
         [{ role: "user" as const, content: args.task }],
         subPrompt,
         // onToolCall
         (name: string, toolArgs: any) => {
           run.toolCalls.push(name);
           console.log(`[SubAgent:${label}] Tool: ${name}`);
+          if (name.startsWith("bb_")) lastBBSubArgs[name] = toolArgs;
           if (subagentStatusCallback) {
             subagentStatusCallback({
               sessionId: parentSessionId,
@@ -2385,18 +2326,30 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
               subagentId,
               label,
               tool: name,
+              args: toolArgs,
             });
           }
         },
         // onToolResult
         (name: string, toolResult: any) => {
           if (subagentStatusCallback) {
+            const extra: any = {};
+            if (name === "bb_award" && toolResult?.awardedTo) {
+              extra.task_id = lastBBSubArgs.bb_award?.task_id;
+              extra.awarded_to = toolResult.awardedTo;
+            } else if (name === "bb_complete") {
+              extra.task_id = lastBBSubArgs.bb_complete?.task_id;
+            } else if (name === "bb_propose" && toolResult?.taskId) {
+              extra.task_id = toolResult.taskId;
+              if (toolResult.awarded_to) extra.awarded_to = toolResult.awarded_to;
+            }
             subagentStatusCallback({
               sessionId: parentSessionId,
               status: "subagent_tool_done",
               subagentId,
               label,
               tool: name,
+              ...extra,
             });
           }
         },
@@ -2405,9 +2358,9 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
         agentModel,
         undefined,  // sessionId
         undefined,  // onRetry
-        undefined,  // taskId
+        subTaskId,  // taskId — so nested callTool invocations resolve this sub-agent's ALS context
         (text: string) => {
-          // Stream sub-agent's reasoning text to chat log
+          // Stream sub-agent's reasoning to chat log
           if (subagentStatusCallback) {
             subagentStatusCallback({
               sessionId: parentSessionId,
@@ -2420,13 +2373,10 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
         },
       );
     }
+    }); // end runWithCallContext
 
     clearTimeout(timeoutId);
     clearCallContext(subTaskId);
-    // Restore parent agent context globals
-    _currentAgentId = prevAgentId;
-    _currentProjectWorkingFolder = prevProjectFolder;
-    _currentSubagentDepth = currentDepth;
 
     run.status = "completed";
     run.completedAt = new Date().toISOString();
@@ -2466,10 +2416,6 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
     };
   } catch (err: any) {
     clearCallContext(subTaskId);
-    // Restore parent agent context globals
-    _currentAgentId = prevAgentId;
-    _currentProjectWorkingFolder = prevProjectFolder;
-    _currentSubagentDepth = currentDepth;
     run.status = "error";
     run.completedAt = new Date().toISOString();
 
@@ -2813,14 +2759,13 @@ async function realtimeAgentLoop(
     }
     systemPrompt += `\n  P2P bidder agents: ${bidderAgents.join(", ") || "(none)"}`;
     systemPrompt += `\n  Consensus mechanism: ${mechanism}`;
-    systemPrompt += `\n\n  P2P BIDDING WORKFLOW:`;
-    systemPrompt += `\n    1. bb_propose("task description") — post the job. Bidder agents are AUTOMATICALLY woken up and asked to bid.`;
-    systemPrompt += `\n    2. Use bb_read to check for bids. Bidders need time to respond — if no bids yet, call bb_read again after a moment.`;
-    systemPrompt += `\n    3. bb_award(task_id, orchestrator_scores=[{agent_id, score, reason}, ...]) — review bids via bb_read (includes bidder profiles: persona, expertise, reputation). Then provide YOUR score (0-1) for each bidder. Final winner = 50% bidder confidence + 50% your score. Example: orchestrator_scores=[{agent_id:"web_researcher_1", score:0.9, reason:"best fit for data tasks"}, ...]`;
-    systemPrompt += `\n    4. send_task({to: "winner_id", task: "full task details"}) — SEND the actual task to the winner`;
-    systemPrompt += `\n    5. wait_result({from: "winner_id"}) — collect the result`;
-    systemPrompt += `\n    IMPORTANT: After bb_award, you MUST send_task to the winner — the award alone does NOT execute the task.`;
-    systemPrompt += `\n    IMPORTANT: Do NOT skip bidding. Do NOT do the work yourself. Post tasks, wait for bids, award, then send_task.`;
+    systemPrompt += `\n\n  P2P BIDDING WORKFLOW — same as realtime send_task but with bidding:`;
+    systemPrompt += `\n    1. bb_propose("task description") — posts task, waits ~5s for bids, picks best bidder, dispatches task automatically. Returns who won.`;
+    systemPrompt += `\n    2. wait_result({from: "winner_id"}) — collect the result (winner ID is in bb_propose response).`;
+    systemPrompt += `\n    3. Repeat for next task.`;
+    systemPrompt += `\n    That's it. bb_propose does everything: post → collect bids → award → dispatch. Just like send_task but agents bid first.`;
+    systemPrompt += `\n    IMPORTANT: Do ONE task at a time. bb_propose → wait_result → next bb_propose.`;
+    systemPrompt += `\n    IMPORTANT: Do NOT do the work yourself. Always delegate via bb_propose.`;
 
     if (bidOnlyAgents.length > 0) {
       systemPrompt += `\n\n  CRITICAL: Agents ${bidOnlyAgents.join(", ")} are ONLY reachable via blackboard bidding. Do NOT send_task to them without first going through bb_propose → bb_award.`;
@@ -2915,9 +2860,145 @@ async function realtimeAgentLoop(
     try {
       handle.status = "idle";
 
-      // Wait for a task message on bus topic "task:{agentId}"
-      const msg = await busWaitForMessage(sessionId, `task:${agentId}`, 0, signal);
+      // Wait for either a task or a bid-request. Tasks have priority — if a task
+      // message arrived while the agent was in a bid-only cycle, it's picked up
+      // from history first. This prevents task starvation by continuous bid_requests.
+      const received = await busWaitForAny(sessionId, [
+        { topic: `task:${agentId}`, kind: "task" },
+        { topic: `bid_request:${agentId}`, kind: "bid" },
+      ], 0, signal);
 
+      // ── Bid request: constrained "bid-only" cycle ────────────────────────
+      if (received.kind === "bid") {
+        const bidPayload = received.msg.payload || {};
+        const bidTaskId = String(bidPayload.task_id || "");
+        const bidDescription = String(bidPayload.description || "");
+        if (!bidTaskId) {
+          console.warn(`[Realtime:${agentDef.name}] bid_request missing task_id, ignoring`);
+          continue;
+        }
+
+        // Skip stale bid requests — if the task is already awarded, in_progress,
+        // or completed, don't waste an LLM call bidding on it.
+        const bbTask = blackboardGetTask(sessionId, bidTaskId);
+        if (!bbTask || (bbTask.status !== "open" && bbTask.status !== "bidding")) {
+          console.log(`[Realtime:${agentDef.name}] Skipping stale bid_request for task "${bidTaskId}" (status: ${bbTask?.status || "not found"})`);
+          continue;
+        }
+
+        // Also skip if this agent already bid on this task
+        const alreadyBid = bbTask.bids?.some((b: any) => b.agentId === agentId);
+        if (alreadyBid) {
+          console.log(`[Realtime:${agentDef.name}] Skipping bid_request for task "${bidTaskId}" — already bid`);
+          continue;
+        }
+
+        console.log(`[Realtime:${agentDef.name}] Bid request for task ${bidTaskId}: "${bidDescription.slice(0, 80)}"`);
+
+        if (subagentStatusCallback) {
+          subagentStatusCallback({
+            sessionId, status: "realtime_agent_bidding",
+            agentId, label: agentDef.name,
+            task_id: bidTaskId,
+            description: bidDescription,
+            proposed_by: bidPayload.proposed_by,
+          });
+        }
+
+        const bidAgentModel = agentDef.model || undefined;
+
+        if (isLocalCliAgent(bidAgentModel)) {
+          // CLI agents auto-bid using their reputation score (no LLM call needed).
+          const conf = (typeof agentDef.p2p?.reputation_score === "number")
+            ? agentDef.p2p.reputation_score
+            : 0.5;
+          try {
+            blackboardBid(sessionId, agentId, bidTaskId, conf, undefined, "auto-bid (CLI agent)");
+            busPublish(sessionId, agentId, "bb:bid_received", {
+              task_id: bidTaskId, bidder: agentId, confidence: conf,
+            });
+            if (subagentStatusCallback) {
+              subagentStatusCallback({
+                sessionId, status: "realtime_agent_tool",
+                agentId, label: agentDef.name, tool: "bb_bid",
+                args: { task_id: bidTaskId, confidence: conf, reasoning: "auto-bid" },
+              });
+            }
+          } catch (e: any) {
+            console.warn(`[Realtime:${agentDef.name}] Auto-bid failed: ${e.message}`);
+          }
+        } else {
+          // LLM agents: constrained call exposing only bb_read + bb_bid.
+          const bidTools = finalTools.filter((t: any) => {
+            const n = t.function?.name;
+            return n === "bb_read" || n === "bb_bid";
+          });
+          const expertiseBlock = agentDef.p2p?.confidence_domains?.length
+            ? `\nYour expertise domains: ${agentDef.p2p.confidence_domains.join(", ")}`
+            : "";
+          const bidPrompt = `You are agent "${agentDef.name}" (id: ${agentId}) evaluating a bid request on the shared blackboard.${expertiseBlock}
+
+TASK ID: ${bidTaskId}
+TASK DESCRIPTION: "${bidDescription}"
+
+YOUR ONLY JOB RIGHT NOW IS TO BID — NOT TO EXECUTE THE TASK.
+1. (Optional) Use bb_read(task_id="${bidTaskId}") to inspect the task in detail.
+2. Use bb_bid(task_id="${bidTaskId}", confidence=<0.0–1.0>, reasoning="<short>") with your honest confidence based on how well this task matches your expertise.
+3. STOP after one bid. Do NOT call any other tool. The proposer will award and dispatch the real task separately.`;
+
+          const bidCallId = `bid-${agentId}-${Date.now()}`;
+          const bidCtx: CallContext = {
+            parentSessionId: sessionId,
+            subagentDepth: 0,
+            agentId,
+            projectWorkingFolder: getCurrentProjectWorkingFolder(),
+          };
+          setCallContext(bidCallId, sessionId, 0, agentId, bidCtx.projectWorkingFolder);
+          try {
+            const bidCaller = await getSubagentCaller();
+            await runWithCallContext(bidCtx, () => bidCaller(
+              [{ role: "user" as const, content: bidPrompt }],
+              `You are ${agentDef.name}. Bid-only mode — only bb_read and bb_bid are allowed. Submit ONE bid then stop.`,
+              (name: string, toolArgs: any) => {
+                if (subagentStatusCallback) {
+                  subagentStatusCallback({
+                    sessionId, status: "realtime_agent_tool",
+                    agentId, label: agentDef.name, tool: name, args: toolArgs,
+                  });
+                }
+              },
+              (name: string, _toolResult: any) => {
+                if (subagentStatusCallback) {
+                  subagentStatusCallback({
+                    sessionId, status: "realtime_agent_tool_done",
+                    agentId, label: agentDef.name, tool: name,
+                  });
+                }
+              },
+              signal,
+              bidTools,
+              bidAgentModel,
+              undefined, undefined, bidCallId,
+            ));
+          } catch (err: any) {
+            if (err.message !== "aborted" && !signal.aborted) {
+              console.warn(`[Realtime:${agentDef.name}] Bid call failed: ${err.message}`);
+            }
+          } finally {
+            clearCallContext(bidCallId);
+          }
+        }
+
+        if (subagentStatusCallback) {
+          subagentStatusCallback({
+            sessionId, status: "realtime_agent_bid_done",
+            agentId, label: agentDef.name, task_id: bidTaskId,
+          });
+        }
+        continue;
+      }
+
+      const msg = received.msg;
       handle.status = "working";
       const taskText = msg.payload?.task || "(no task)";
       handle.lastTask = taskText;
@@ -2934,11 +3015,16 @@ async function realtimeAgentLoop(
         });
       }
 
-      // Set call context so protocol tools know who we are — preserve project folder
-      const prevAgentId = _currentAgentId;
-      const prevProjectFolder = _currentProjectWorkingFolder;
+      // Build per-task call context — scoped via AsyncLocalStorage so parallel
+      // realtime sessions can't race on module-level state.
       const rtTaskId = `realtime-${agentId}-${Date.now()}`;
-      setCallContext(rtTaskId, sessionId, 0, agentId, _currentProjectWorkingFolder);
+      const rtCtx: CallContext = {
+        parentSessionId: sessionId,
+        subagentDepth: 0,
+        agentId,
+        projectWorkingFolder: getCurrentProjectWorkingFolder(),
+      };
+      setCallContext(rtTaskId, sessionId, 0, agentId, rtCtx.projectWorkingFolder);
 
       // Run LLM tool loop for this task
       const taskPrompt = `${systemPrompt}\n\nYOUR TASK:\n${msg.payload.task}${msg.payload.context ? `\n\nADDITIONAL CONTEXT:\n${msg.payload.context}` : ""}`;
@@ -2947,7 +3033,9 @@ async function realtimeAgentLoop(
       const realtimeAgentModel = agentDef.model || undefined;
 
       let result: any;
+      const lastBBRtArgs: Record<string, any> = {};
 
+      result = await runWithCallContext(rtCtx, async () => {
       if (isLocalCliAgent(realtimeAgentModel)) {
         // --- Local CLI agent (Claude Code or Codex): autonomous with own tool loop ---
         const isCodex = isCodexModel(realtimeAgentModel);
@@ -2955,15 +3043,16 @@ async function realtimeAgentLoop(
         const runAgent = isCodex ? runCodexAgent : runClaudeCodeAgent;
         const rtCliSubModel = extractCliSubModel(realtimeAgentModel);
         console.log(`[Realtime:${agentDef.name}] Using ${cliName} CLI as agent backend${rtCliSubModel ? ` (model: ${rtCliSubModel})` : ""}`);
-        result = await runAgent(msg.payload.task, {
-          workingDir: _currentProjectWorkingFolder || settings.sandboxDir,
+        return await runAgent(msg.payload.task, {
+          workingDir: getCurrentProjectWorkingFolder() || settings.sandboxDir,
           systemPrompt: taskPrompt,
           signal,
-          timeout: (settings.subAgentTimeout || 300) * 1000,
+          timeout: (settings.subAgentTimeout || 120) * 1000,
           ...(isCodex ? {} : { maxTurns: settings.agentMaxToolRounds || 15 }),
           model: rtCliSubModel,
           onToolCall: (name: string, toolArgs: any) => {
             console.log(`[Realtime:${agentDef.name}] ${cliName} Tool: ${name}`);
+            if (name.startsWith("bb_")) lastBBRtArgs[name] = toolArgs;
             if (subagentStatusCallback) {
               subagentStatusCallback({
                 sessionId,
@@ -2971,6 +3060,7 @@ async function realtimeAgentLoop(
                 agentId,
                 label: agentDef.name,
                 tool: name,
+                args: toolArgs,
               });
             }
           },
@@ -2978,11 +3068,12 @@ async function realtimeAgentLoop(
       } else {
         // --- Standard LLM API agent ---
         const callAgent = await getSubagentCaller();
-        result = await callAgent(
+        return await callAgent(
           [{ role: "user" as const, content: msg.payload.task }],
           taskPrompt,
           (name: string, toolArgs: any) => {
             console.log(`[Realtime:${agentDef.name}] Tool: ${name}`);
+            if (name.startsWith("bb_")) lastBBRtArgs[name] = toolArgs;
             if (subagentStatusCallback) {
               subagentStatusCallback({
                 sessionId,
@@ -2990,17 +3081,28 @@ async function realtimeAgentLoop(
                 agentId,
                 label: agentDef.name,
                 tool: name,
+                args: toolArgs,
               });
             }
           },
           (name: string, toolResult: any) => {
             if (subagentStatusCallback) {
+              const extra: any = {};
+              if (name === "bb_award" && toolResult?.awardedTo) {
+                extra.task_id = lastBBRtArgs.bb_award?.task_id;
+                extra.awarded_to = toolResult.awardedTo;
+              } else if (name === "bb_complete") {
+                extra.task_id = lastBBRtArgs.bb_complete?.task_id;
+              } else if (name === "bb_propose" && toolResult?.taskId) {
+                extra.task_id = toolResult.taskId;
+              }
               subagentStatusCallback({
                 sessionId,
                 status: "realtime_agent_tool_done",
                 agentId,
                 label: agentDef.name,
                 tool: name,
+                ...extra,
               });
             }
           },
@@ -3011,7 +3113,7 @@ async function realtimeAgentLoop(
           undefined,  // onRetry
           rtTaskId,   // taskId — so callTool resolves the correct call context
           (text: string) => {
-            // Stream agent's intermediate reasoning text to chat log
+            // Stream agent's intermediate reasoning to chat log
             if (subagentStatusCallback) {
               subagentStatusCallback({
                 sessionId,
@@ -3024,11 +3126,9 @@ async function realtimeAgentLoop(
           },
         );
       }
+      }); // end runWithCallContext
 
-      // Restore context
       clearCallContext(rtTaskId);
-      _currentAgentId = prevAgentId;
-      _currentProjectWorkingFolder = prevProjectFolder;
 
       const resultContent = result.content || "(no result)";
       handle.lastResult = resultContent.slice(0, 5000);
@@ -3172,7 +3272,7 @@ export function getHumanConnectedAgents(sessionId: string): string[] {
 }
 
 /** Send a task from the human to a specific agent */
-export function humanSendToAgent(sessionId: string, targetAgentId: string, task: string, context?: string): { ok: boolean; error?: string } {
+export async function humanSendToAgent(sessionId: string, targetAgentId: string, task: string, context?: string): Promise<{ ok: boolean; error?: string }> {
   const session = realtimeSessions.get(sessionId);
   if (!session) return { ok: false, error: "No realtime session active." };
 
@@ -3197,6 +3297,58 @@ export function humanSendToAgent(sessionId: string, targetAgentId: string, task:
     }
   }
 
+  // Remote agent routing — delegate to remote instance instead of local bus
+  if (targetAgent.agentDef.type === "remote") {
+    const rtSettings = await getSettings();
+    const instances = rtSettings.remoteInstances || [];
+    let instance: RemoteInstance | undefined;
+    if (targetAgent.agentDef.remote_instance) {
+      instance = instances.find((i: RemoteInstance) => i.id === targetAgent.agentDef.remote_instance || i.name === targetAgent.agentDef.remote_instance);
+    }
+    if (!instance && targetAgent.agentDef.remote_url && targetAgent.agentDef.remote_token) {
+      instance = { id: "inline", name: targetAgent.agentDef.id, url: targetAgent.agentDef.remote_url, token: targetAgent.agentDef.remote_token };
+    }
+    if (!instance) {
+      return { ok: false, error: `Remote agent "${targetAgentId}" has no resolvable instance.` };
+    }
+    console.log(`[Realtime:Human] Human → REMOTE ${targetAgentId} (${instance.url}): ${task.slice(0, 100)}`);
+    const remoteLabel = targetAgent.agentDef.name || targetAgentId;
+    if (subagentStatusCallback) {
+      subagentStatusCallback({ sessionId, status: "running", agentId: targetAgentId, label: remoteLabel, content: `Remote task → ${instance.name || instance.url}` });
+    }
+    // Run remote task in background — don't block the human send
+    remoteTask(instance, context ? `${task}\n\nADDITIONAL CONTEXT:\n${context}` : task, {
+      idleTimeoutMs: (rtSettings.subAgentTimeout || 120) * 1000,
+      maxTimeoutMs: (rtSettings.subAgentTimeout || 1800) * 1000,
+      onProgress: (progressMsg: string) => {
+        if (subagentStatusCallback) {
+          if (/Still working\.\.\./.test(progressMsg)) return;
+          subagentStatusCallback({ sessionId, status: "running", agentId: targetAgentId, label: remoteLabel, content: progressMsg });
+        }
+      },
+    }).then((result) => {
+      // Publish result to bus so waiting agents can pick it up
+      busPublish(sessionId, targetAgentId, `result:${targetAgentId}`, {
+        result: result.ok ? result.result : `Remote error: ${result.error}`,
+        outputFiles: [],
+      });
+      if (subagentStatusCallback) {
+        subagentStatusCallback({
+          sessionId,
+          status: result.ok ? "realtime_agent_done" : "error",
+          agentId: targetAgentId,
+          label: remoteLabel,
+          content: result.ok ? (result.result || "").slice(0, 200) : result.error,
+        });
+      }
+    }).catch((err) => {
+      if (subagentStatusCallback) {
+        subagentStatusCallback({ sessionId, status: "error", agentId: targetAgentId, label: remoteLabel, content: err.message });
+      }
+    });
+    return { ok: true };
+  }
+
   // Publish task to the agent's bus topic
   const humanNodeForPublish = humanNode || session.systemConfig.agents?.find((a: AgentConfig) => a.role === "human");
   busPublish(sessionId, humanNodeForPublish?.id || "human", `task:${targetAgentId}`, {
@@ -3210,7 +3362,7 @@ export function humanSendToAgent(sessionId: string, targetAgentId: string, task:
 }
 
 /** Send a task from human to ALL connected agents (broadcast) */
-export function humanBroadcastToAgents(sessionId: string, task: string, context?: string): { ok: boolean; sent: string[]; errors: string[] } {
+export async function humanBroadcastToAgents(sessionId: string, task: string, context?: string): Promise<{ ok: boolean; sent: string[]; errors: string[] }> {
   const connectedAgents = getHumanConnectedAgents(sessionId);
   if (connectedAgents.length === 0) {
     return { ok: false, sent: [], errors: ["No agents connected to the human node"] };
@@ -3220,7 +3372,7 @@ export function humanBroadcastToAgents(sessionId: string, task: string, context?
   const errors: string[] = [];
 
   for (const agentId of connectedAgents) {
-    const result = humanSendToAgent(sessionId, agentId, task, context);
+    const result = await humanSendToAgent(sessionId, agentId, task, context);
     if (result.ok) {
       sent.push(agentId);
     } else {
@@ -3247,7 +3399,7 @@ export async function humanWaitForAgent(sessionId: string, agentId: string, time
 // --- Realtime tool implementations ---
 
 async function realtimeSendTask(args: { to: string; task: string; context?: string; wait?: boolean }, signal?: AbortSignal): Promise<any> {
-  const sessionId = _currentParentSessionId || "default";
+  const sessionId = getCurrentSessionId() || "default";
   const session = realtimeSessions.get(sessionId);
   if (!session) {
     return { ok: false, error: "No realtime session active." };
@@ -3260,7 +3412,7 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
   }
 
   // Validate caller is allowed to send to target
-  const callerId = _currentAgentId;
+  const callerId = getCurrentAgentId();
   if (callerId === "main") {
     // P2P mode: main can send to any peer agent (no orchestrator hierarchy)
     const isP2PMode = session.systemConfig.system?.orchestration_mode === "p2p";
@@ -3330,8 +3482,8 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
 
   // Remote agent routing — delegate to remote instance instead of local bus
   if (targetAgent.agentDef.type === "remote") {
-    const settings = await getSettings();
-    const instances = settings.remoteInstances || [];
+    const rtSettings = await getSettings();
+    const instances = rtSettings.remoteInstances || [];
     let instance: RemoteInstance | undefined;
     if (targetAgent.agentDef.remote_instance) {
       instance = instances.find((i: RemoteInstance) => i.id === targetAgent.agentDef.remote_instance || i.name === targetAgent.agentDef.remote_instance);
@@ -3342,35 +3494,31 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
     if (!instance) {
       return { ok: false, error: `Remote agent "${args.to}" has no resolvable instance. Configure remote_instance or remote_url+remote_token.` };
     }
-    console.log(`[Realtime] ${_currentAgentId} → send_task → REMOTE ${args.to} (${instance.url})`);
+    console.log(`[Realtime] ${getCurrentAgentId()} → send_task → REMOTE ${args.to} (${instance.url})`);
     const remoteLabel = targetAgent.agentDef.name || args.to;
     if (subagentStatusCallback) {
       subagentStatusCallback({ sessionId, status: "running", agentId: args.to, label: remoteLabel, content: `Remote task → ${instance.name || instance.url}` });
     }
     try {
-      const rtSettings = await getSettings();
       const result = await remoteTask(instance, args.task, {
-        pollIntervalMs: (rtSettings.remotePollInterval ?? 2) * 1000,
-        idleTimeoutMs: (rtSettings.remoteIdleTimeout ?? 60) * 1000,
-        maxTimeoutMs: (rtSettings.remoteMaxTimeout ?? 1800) * 1000,
+        idleTimeoutMs: (rtSettings.subAgentTimeout || 120) * 1000,
+        maxTimeoutMs: (rtSettings.subAgentTimeout || 1800) * 1000,
         signal,
-        onProgress: (newEntries) => {
+        onProgress: (progressMsg: string) => {
           if (subagentStatusCallback) {
-            for (const entry of newEntries) {
-              // Skip heartbeat "Still working..." entries — they're just keep-alive
-              if (/Still working\.\.\./.test(entry)) continue;
-              subagentStatusCallback({ sessionId, status: "running", agentId: args.to, label: remoteLabel, content: entry });
-            }
+            // Skip heartbeat entries
+            if (/Still working\.\.\./.test(progressMsg)) return;
+            subagentStatusCallback({ sessionId, status: "running", agentId: args.to, label: remoteLabel, content: progressMsg });
           }
         },
       });
       if (subagentStatusCallback) {
-        subagentStatusCallback({ sessionId, status: "done", agentId: args.to, label: targetAgent.agentDef.name || args.to, content: result.ok ? (result.result || "").slice(0, 200) : result.error });
+        subagentStatusCallback({ sessionId, status: "done", agentId: args.to, label: remoteLabel, content: result.ok ? (result.result || "").slice(0, 200) : result.error });
       }
       return { ok: result.ok, agentId: args.to, agentName: targetAgent.agentDef.name, result: result.result, error: result.error };
     } catch (err: any) {
       if (subagentStatusCallback) {
-        subagentStatusCallback({ sessionId, status: "error", agentId: args.to, label: targetAgent.agentDef.name || args.to, content: err.message });
+        subagentStatusCallback({ sessionId, status: "error", agentId: args.to, label: remoteLabel, content: err.message });
       }
       return { ok: false, agentId: args.to, error: err.message };
     }
@@ -3378,12 +3526,12 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
 
   // If target is a human node, route output to client via callback (not LLM loop)
   if (targetAgent.agentDef.role === "human") {
-    console.log(`[Realtime] ${_currentAgentId} → send_task → HUMAN (${args.to}): ${args.task.slice(0, 100)}`);
+    console.log(`[Realtime] ${getCurrentAgentId()} → send_task → HUMAN (${args.to}): ${args.task.slice(0, 100)}`);
     // Collect any output files from this agent's last run
-    const callerHandle = session.agents.get(_currentAgentId);
+    const callerHandle = session.agents.get(getCurrentAgentId());
     const callerFiles: string[] = [];
     // Check bus history for this agent's most recent result which may contain outputFiles
-    const recentResults = busHistory(sessionId, `result:${_currentAgentId}`);
+    const recentResults = busHistory(sessionId, `result:${getCurrentAgentId()}`);
     if (recentResults.length > 0) {
       const lastResult = recentResults[recentResults.length - 1];
       if (lastResult.payload?.outputFiles) {
@@ -3394,8 +3542,8 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
       subagentStatusCallback({
         sessionId,
         status: "human_node_message",
-        agentId: _currentAgentId,
-        label: session.agents.get(_currentAgentId)?.agentDef.name || _currentAgentId,
+        agentId: getCurrentAgentId(),
+        label: session.agents.get(getCurrentAgentId())?.agentDef.name || getCurrentAgentId(),
         content: args.task,
         outputFiles: callerFiles.length > 0 ? callerFiles : undefined,
       });
@@ -3410,19 +3558,19 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
   }
 
   // Publish task to the agent's bus topic
-  busPublish(sessionId, _currentAgentId, `task:${args.to}`, {
+  busPublish(sessionId, getCurrentAgentId(), `task:${args.to}`, {
     task: args.task,
     context: args.context,
-    from: _currentAgentId,
+    from: getCurrentAgentId(),
   });
 
-  console.log(`[Realtime] ${_currentAgentId} → send_task → ${args.to}: ${args.task.slice(0, 100)}`);
+  console.log(`[Realtime] ${getCurrentAgentId()} → send_task → ${args.to}: ${args.task.slice(0, 100)}`);
 
   // If wait=true, block until the agent publishes its result
   if (args.wait) {
     try {
       const settings = await getSettings();
-      const timeout = (args as any).timeout || (settings.subAgentTimeout || 300);
+      const timeout = (args as any).timeout || (settings.subAgentTimeout || 120);
       const resultMsg = await busWaitForMessage(sessionId, `result:${args.to}`, timeout * 1000, signal);
       return {
         ok: true,
@@ -3456,7 +3604,7 @@ async function realtimeSendTask(args: { to: string; task: string; context?: stri
 }
 
 async function realtimeWaitResult(args: { from: string; timeout?: number }, signal?: AbortSignal): Promise<any> {
-  const sessionId = _currentParentSessionId || "default";
+  const sessionId = getCurrentSessionId() || "default";
   const session = realtimeSessions.get(sessionId);
   if (!session) {
     return { ok: false, error: "No realtime session active." };
@@ -3482,7 +3630,7 @@ async function realtimeWaitResult(args: { from: string; timeout?: number }, sign
   // Otherwise wait for the bus message
   try {
     const settings = await getSettings();
-    const timeout = (args.timeout || settings.subAgentTimeout || 300) * 1000;
+    const timeout = (args.timeout || settings.subAgentTimeout || 120) * 1000;
     const resultMsg = await busWaitForMessage(sessionId, `result:${args.from}`, timeout, signal);
     return {
       ok: true,
@@ -3507,7 +3655,7 @@ async function realtimeWaitResult(args: { from: string; timeout?: number }, sign
 }
 
 function realtimeCheckAgents(): any {
-  const sessionId = _currentParentSessionId || "default";
+  const sessionId = getCurrentSessionId() || "default";
   const session = realtimeSessions.get(sessionId);
   if (!session) {
     return { ok: false, error: "No realtime session active." };
@@ -3647,22 +3795,10 @@ export async function getRealtimeAgentConfigSummary(): Promise<string | null> {
   }
 
   // Agent list (compact)
-  const rtRemoteInstances = settings.remoteInstances || [];
   summary += `\nAgents:\n`;
   for (const a of config.agents || []) {
-    const flags = [a.bus?.enabled && "bus", a.mesh?.enabled && "mesh", a.type === "remote" && `REMOTE → ${a.remote_instance || a.remote_url || "inline"}`].filter(Boolean).join(",");
-    let persona = a.persona || "";
-    let responsibility = "";
-    if (a.type === "remote" && a.remote_instance) {
-      const ri = rtRemoteInstances.find((i: any) => i.id === a.remote_instance || i.name === a.remote_instance);
-      if (ri) {
-        if (!persona && ri.persona) persona = ri.persona;
-        if (ri.responsibility) responsibility = ri.responsibility;
-      }
-    }
-    let desc = `- ${a.id} ("${a.name}"): ${a.role}${flags ? ` [${flags}]` : ""}${persona ? ` — ${persona}` : ""}`;
-    if (responsibility) desc += ` | Responsibility: ${responsibility}`;
-    summary += desc + "\n";
+    const flags = [a.bus?.enabled && "bus", a.mesh?.enabled && "mesh"].filter(Boolean).join(",");
+    summary += `- ${a.id} ("${a.name}"): ${a.role}${flags ? ` [${flags}]` : ""}${a.persona ? ` — ${a.persona}` : ""}\n`;
   }
 
   // Connections
@@ -3678,7 +3814,7 @@ export async function getRealtimeAgentConfigSummary(): Promise<string | null> {
     }).join(" | ")}\n`;
   }
 
-  // Delegation instructions — realtime mode uses connections, not free choice
+  // Delegation instructions (compact)
   summary += `\nDelegation: `;
   if (isP2P) {
     const peerIds = (config.agents || []).filter((a: AgentConfig) => a.role !== "human").map(a => a.id);
@@ -3688,7 +3824,6 @@ export async function getRealtimeAgentConfigSummary(): Promise<string | null> {
   } else {
     summary += `Use send_task/wait_result to assign work. Send to multiple agents for parallel execution.\n`;
   }
-  summary += `\nTools: send_task/wait_result = assign work (choose by responsibility/persona). proto_tcp = private DM. proto_bus = broadcast. bb_* = P2P auction then send_task to winner. Remote agents [REMOTE] use send_task normally.\n`;
   summary += `Synthesize agent results into a clear response with headings. Mention any generated files. Use run_python for charts/reports when appropriate.\n`;
   return summary;
 }
@@ -3705,12 +3840,40 @@ interface CallContext {
 
 const callContexts = new Map<string, CallContext>();
 
-// Global fallback context — used by helper functions (runPython, spawnSubagent, etc.)
-// that don't yet receive a taskId. Updated on every setCallContext call.
-let _currentParentSessionId: string | undefined;
-let _currentSubagentDepth: number = 0;
-let _currentAgentId: string = "main";
-let _currentProjectWorkingFolder: string | undefined;
+// AsyncLocalStorage-backed context. Every concurrent task gets its own store that
+// survives across `await` boundaries, so tool implementations can resolve the
+// correct sessionId/agentId without racing on shared module state.
+const callStore = new AsyncLocalStorage<CallContext>();
+
+// Fallback values for callers that run outside any ALS scope (legacy code paths).
+// NEVER mutated during concurrent work; only seeded by setCallContext.
+let _fallbackParentSessionId: string | undefined;
+let _fallbackSubagentDepth: number = 0;
+let _fallbackAgentId: string = "main";
+let _fallbackProjectWorkingFolder: string | undefined;
+
+function getCurrentSessionId(): string | undefined {
+  return callStore.getStore()?.parentSessionId ?? _fallbackParentSessionId;
+}
+function getCurrentAgentId(): string {
+  return callStore.getStore()?.agentId ?? _fallbackAgentId;
+}
+function getCurrentSubagentDepth(): number {
+  return callStore.getStore()?.subagentDepth ?? _fallbackSubagentDepth;
+}
+function getCurrentProjectWorkingFolder(): string | undefined {
+  return callStore.getStore()?.projectWorkingFolder ?? _fallbackProjectWorkingFolder;
+}
+
+/**
+ * Run `fn` with an ALS-scoped call context. All tool implementations invoked
+ * inside this async scope (including after awaits) will resolve their
+ * sessionId/agentId from `ctx` via the getCurrent* helpers. This is the
+ * concurrency-safe replacement for the old save/restore-around-await pattern.
+ */
+export function runWithCallContext<T>(ctx: CallContext, fn: () => Promise<T> | T): Promise<T> | T {
+  return callStore.run(ctx, fn);
+}
 
 export function setCallContext(taskId: string, sessionId?: string, depth?: number, agentId?: string, projectWorkingFolder?: string) {
   const ctx: CallContext = {
@@ -3720,11 +3883,13 @@ export function setCallContext(taskId: string, sessionId?: string, depth?: numbe
     projectWorkingFolder,
   };
   callContexts.set(taskId, ctx);
-  // Update globals as fallback for functions that don't have taskId
-  _currentParentSessionId = sessionId;
-  _currentSubagentDepth = depth || 0;
-  _currentAgentId = agentId || "main";
-  _currentProjectWorkingFolder = projectWorkingFolder;
+  // Seed fallbacks for legacy paths that never enter an ALS scope.
+  // These are only read when callStore.getStore() is undefined, so concurrent
+  // sessions that DO run inside ALS are unaffected by this write.
+  _fallbackParentSessionId = sessionId;
+  _fallbackSubagentDepth = depth || 0;
+  _fallbackAgentId = agentId || "main";
+  _fallbackProjectWorkingFolder = projectWorkingFolder;
 }
 
 export function clearCallContext(taskId: string) {
@@ -3732,12 +3897,17 @@ export function clearCallContext(taskId: string) {
 }
 
 export async function callTool(name: string, args: any, signal?: AbortSignal, taskId?: string): Promise<any> {
+  // If a taskId is provided, look up its context and run the dispatch inside an
+  // ALS scope so tool implementations see the correct session/agent even when
+  // multiple tasks run in parallel.
   const ctx = taskId ? callContexts.get(taskId) : undefined;
-  const _currentParentSessionId = ctx?.parentSessionId;
-  const _currentSubagentDepth = ctx?.subagentDepth || 0;
-  const _currentAgentId = ctx?.agentId || "main";
-  const _currentProjectWorkingFolder = ctx?.projectWorkingFolder;
+  if (ctx) {
+    return callStore.run(ctx, () => callToolImpl(name, args, signal, taskId));
+  }
+  return callToolImpl(name, args, signal, taskId);
+}
 
+async function callToolImpl(name: string, args: any, signal?: AbortSignal, taskId?: string): Promise<any> {
   switch (name) {
     case "web_search": return webSearch(args);
     case "openrouter_web_search": return openRouterWebSearch(args);
@@ -3752,30 +3922,30 @@ export async function callTool(name: string, args: any, signal?: AbortSignal, ta
     case "load_skill": return loadSkillTool(args);
     case "clawhub_search": return clawhubSearchTool(args);
     case "clawhub_install": return clawhubInstallTool(args);
-    case "spawn_subagent": return spawnSubagent(args, _currentParentSessionId, _currentSubagentDepth);
+    case "spawn_subagent": return spawnSubagent(args, getCurrentSessionId(), getCurrentSubagentDepth(), signal);
 
+    // ─── Auto Create Architecture Tool ───
     case "create_architecture": {
       const { description, architectureType, agentCount } = args;
       if (!description) return { ok: false, error: "description is required" };
       const currentSettings = await getSettings();
-      // Resolve defaults from settings (Auto Architecture — AI decides)
       const archType = architectureType || currentSettings.autoArchitectureType || "hierarchical";
       const count = agentCount || currentSettings.autoAgentCount || "auto";
       const protocols: string[] = currentSettings.autoProtocols || (currentSettings.autoProtocol ? [currentSettings.autoProtocol] : ["tcp"]);
       const protocol = protocols.join(", ");
-      const sessionId = _currentParentSessionId || taskId || "default";
+      const sessionId = getCurrentSessionId() || taskId || "default";
 
-      // Optional base template (user linked an architecture file in settings)
+      // Load base template if configured (user linked an architecture file in settings)
       let baseTemplatePrompt = "";
       if (currentSettings.subAgentConfigFile) {
         const baseConfig = loadAgentConfig(currentSettings.subAgentConfigFile);
         if (baseConfig) {
           const baseAgents = (baseConfig.agents || []).filter((a: any) => a.role !== "human");
-          baseTemplatePrompt = `\n\nBASE TEMPLATE (clone and adapt from "${currentSettings.subAgentConfigFile}"):\nSystem: ${baseConfig.system?.name || "Unknown"}, Mode: ${baseConfig.system?.orchestration_mode || "hierarchical"}\nAgents:\n${baseAgents.map((a: any) => `- ${a.id} (${a.role}): ${a.persona || a.name}`).join("\n")}\n\nUse this template as a starting point. Keep similar agent roles and structure, but adapt names, personas, and responsibilities to match the user's request.`;
+          baseTemplatePrompt = `\n\nBASE TEMPLATE (clone and adapt from "${currentSettings.subAgentConfigFile}"):\nSystem: ${baseConfig.system?.name || "Unknown"}, Mode: ${baseConfig.system?.orchestration_mode || "hierarchical"}\nAgents:\n${baseAgents.map((a: any) => `- ${a.id} (${a.role}): ${a.persona || a.name}`).join("\n")}\n\nUse this template as a starting point. Keep similar agent roles and structure, but adapt names, personas, and responsibilities to match the user's request. You may add/remove agents as needed.`;
         }
       }
 
-      // Use LLM to generate architecture (same prompt as /agents/generate-system)
+      // Use LLM to generate architecture
       const caller = await getSubagentCaller();
       const genResult = await caller(
         [{ role: "user", content: `Based on this description, generate a complete multi-agent system configuration as a JSON object.
@@ -3856,7 +4026,6 @@ IMPORTANT RULES:
 
       // Track creation for this session
       autoCreatedArchitectures.set(sessionId, filename);
-      // Also set as swarm selection so realtime boot picks it up
       setAutoSwarmSelection(sessionId, filename);
 
       // Shutdown any existing realtime session
@@ -3898,6 +4067,7 @@ IMPORTANT RULES:
       };
     }
 
+    // ─── Auto Choose Swarm: select_swarm Tool ───
     case "select_swarm": {
       const { filename, reason } = args;
       if (!filename) return { ok: false, error: "filename is required" };
@@ -3905,34 +4075,26 @@ IMPORTANT RULES:
       if (!config) return { ok: false, error: `Config file "${filename}" not found or invalid` };
       const allAgents = (config.agents || []).filter((a: AgentConfig) => a.role !== "human");
       if (allAgents.length === 0) return { ok: false, error: "Selected config has no usable agents" };
-      // Store selection for this session
-      const sessionId = _currentParentSessionId || taskId || "default";
+      const sessionId = getCurrentSessionId() || taskId || "default";
       setAutoSwarmSelection(sessionId, filename);
 
-      // Shutdown any existing realtime session before booting the new one (swarm switching)
+      // Shutdown any existing realtime session before booting the new one
       const existingSession = getRealtimeSession(sessionId);
-      if (existingSession) {
-        shutdownRealtimeSession(sessionId);
-      }
+      if (existingSession) shutdownRealtimeSession(sessionId);
 
       // Boot realtime session with the selected YAML config
-      // This starts all agents as persistent loops, using the architecture defined in the YAML
       const rtSession = await startRealtimeSession(sessionId, filename, signal);
       if (!rtSession) {
         return { ok: false, error: `Failed to start realtime session for "${filename}"` };
       }
 
       const agentList = allAgents.map(a => ({
-        id: a.id,
-        name: a.name,
-        role: a.role,
-        persona: a.persona || "",
-        responsibilities: a.responsibilities || [],
+        id: a.id, name: a.name, role: a.role,
+        persona: a.persona || "", responsibilities: a.responsibilities || [],
       }));
       const mode = config.system?.orchestration_mode || "hierarchical";
       const orchestrator = config.agents?.find((a: AgentConfig) => a.role === "orchestrator");
 
-      // Build delegation instructions based on orchestration mode
       let delegationInstructions: string;
       if (orchestrator) {
         delegationInstructions = `Orchestrator "${orchestrator.id}" manages the team. Send tasks to the orchestrator and it will delegate to the right agents. Use send_task({to: "${orchestrator.id}", task: "..."}) then wait_result({from: "${orchestrator.id}"}).`;
@@ -3953,45 +4115,39 @@ IMPORTANT RULES:
       };
     }
 
+    // ─── Remote Task Tool ───
     case "remote_task": {
       const settings = await getSettings();
-      const instances = settings.remoteInstances || [];
       let instance: RemoteInstance | undefined;
 
-      // Try to match by id or name from saved instances
-      instance = instances.find((i: RemoteInstance) => i.id === args.instance || i.name === args.instance);
+      // Try to resolve instance by name/id from settings
+      if (settings.remoteInstances && typeof args.instance === "string") {
+        instance = settings.remoteInstances.find(
+          (ri) => ri.id === args.instance || ri.name === args.instance
+        );
+      }
 
-      // Fallback: try to parse as inline JSON {url, token}
-      if (!instance && args.instance) {
+      // Fallback: parse as inline JSON { url, token }
+      if (!instance && typeof args.instance === "string") {
         try {
           const parsed = JSON.parse(args.instance);
-          if (parsed.url && parsed.token) {
-            instance = { id: "inline", name: "inline", url: parsed.url, token: parsed.token };
+          if (parsed.url) {
+            instance = { id: "inline", name: "inline", url: parsed.url, token: parsed.token || "" };
           }
-        } catch { /* not JSON */ }
+        } catch {
+          // not JSON, already tried name lookup
+        }
       }
 
       if (!instance) {
-        return { ok: false, error: `Remote instance "${args.instance}" not found. Add it in Settings > Remote Instances or pass inline JSON {url, token}.` };
+        const available = settings.remoteInstances?.map((ri) => ri.name || ri.id).join(", ") || "none";
+        return { ok: false, error: `Remote instance "${args.instance}" not found. Available: ${available}` };
       }
 
-      const rtSettings = await getSettings();
-      const idleMs = args.idle_timeout ? args.idle_timeout * 1000 : (rtSettings.remoteIdleTimeout ?? 60) * 1000;
-      const maxMs = args.max_timeout ? args.max_timeout * 1000 : (rtSettings.remoteMaxTimeout ?? 1800) * 1000;
-      const pollMs = (rtSettings.remotePollInterval ?? 2) * 1000;
       return remoteTask(instance, args.task, {
-        pollIntervalMs: pollMs,
-        idleTimeoutMs: idleMs,
-        maxTimeoutMs: maxMs,
+        idleTimeoutMs: (args.idle_timeout || 60) * 1000,
+        maxTimeoutMs: (args.max_timeout || 1800) * 1000,
         signal,
-        onProgress: (newEntries) => {
-          if (subagentStatusCallback) {
-            for (const entry of newEntries) {
-              if (/Still working\.\.\./.test(entry)) continue;
-              subagentStatusCallback({ sessionId: _currentParentSessionId, status: "running", agentId: _currentAgentId, label: instance!.name || "remote", content: entry });
-            }
-          }
-        },
       });
     }
 
@@ -4002,138 +4158,145 @@ IMPORTANT RULES:
 
     // ─── Protocol Tools ───
     case "proto_tcp_send": {
-      const sessionId = _currentParentSessionId || "default";
-      const from = _currentAgentId;
+      const sessionId = getCurrentSessionId() || "default";
+      const from = getCurrentAgentId();
       await tcpOpen(from, args.to, sessionId);
       const sent = await tcpSend(from, args.to, args.topic, args.payload);
       return { ok: sent, protocol: "tcp", from, to: args.to, topic: args.topic };
     }
     case "proto_tcp_read": {
-      const from = _currentAgentId;
+      const from = getCurrentAgentId();
       const messages = tcpRead(from, args.peer);
       return { ok: true, protocol: "tcp", peer: args.peer, messages, count: messages.length };
     }
     case "proto_bus_publish": {
-      const sessionId = _currentParentSessionId || "default";
-      busPublish(sessionId, _currentAgentId, args.topic, args.payload);
-      return { ok: true, protocol: "bus", from: _currentAgentId, topic: args.topic };
+      const sessionId = getCurrentSessionId() || "default";
+      busPublish(sessionId, getCurrentAgentId(), args.topic, args.payload);
+      return { ok: true, protocol: "bus", from: getCurrentAgentId(), topic: args.topic };
     }
     case "proto_bus_history": {
-      const sessionId = _currentParentSessionId || "default";
+      const sessionId = getCurrentSessionId() || "default";
       const messages = busHistory(sessionId, args.topic);
       return { ok: true, protocol: "bus", topic: args.topic || "all", messages, count: messages.length };
     }
     case "proto_queue_send": {
-      const sessionId = _currentParentSessionId || "default";
-      const depth = queueEnqueue(_currentAgentId, args.to, args.topic, args.payload, sessionId);
-      return { ok: true, protocol: "queue", from: _currentAgentId, to: args.to, topic: args.topic, queueDepth: depth };
+      const sessionId = getCurrentSessionId() || "default";
+      const depth = queueEnqueue(getCurrentAgentId(), args.to, args.topic, args.payload, sessionId);
+      return { ok: true, protocol: "queue", from: getCurrentAgentId(), to: args.to, topic: args.topic, queueDepth: depth };
     }
     case "proto_queue_receive": {
-      const msg = queueDequeue(args.from, _currentAgentId, args.topic);
+      const msg = queueDequeue(args.from, getCurrentAgentId(), args.topic);
       return msg
         ? { ok: true, protocol: "queue", message: msg }
         : { ok: true, protocol: "queue", message: null, note: "Queue empty" };
     }
     case "proto_queue_peek": {
-      const messages = queuePeek(args.from, _currentAgentId, args.topic, args.count || 5);
+      const messages = queuePeek(args.from, getCurrentAgentId(), args.topic, args.count || 5);
       return { ok: true, protocol: "queue", messages, count: messages.length };
     }
 
     // ─── Blackboard / P2P Governance Tools ───
     case "bb_propose": {
-      const sessionId = _currentParentSessionId || "default";
+      const sessionId = getCurrentSessionId() || "default";
 
-      // Guard: only orchestrator-role agents can propose tasks (prevents scope creep from worker agents)
+      // Guard: only orchestrator-role agents can propose
       const rtSessionForPropose = realtimeSessions.get(sessionId);
       if (rtSessionForPropose) {
-        const callerDefForPropose = rtSessionForPropose.systemConfig.agents?.find((a: AgentConfig) => a.id === _currentAgentId);
+        const callerDefForPropose = rtSessionForPropose.systemConfig.agents?.find((a: AgentConfig) => a.id === getCurrentAgentId());
         if (callerDefForPropose && callerDefForPropose.role !== "orchestrator" && callerDefForPropose.role !== "human") {
-          console.log(`[bb_propose] BLOCKED: "${_currentAgentId}" (role: ${callerDefForPropose.role}) is not an orchestrator — only orchestrators can propose tasks`);
-          return { ok: false, error: `Only orchestrator agents can propose tasks via bb_propose. Agent "${_currentAgentId}" (role: ${callerDefForPropose.role}) should complete assigned work, not create new tasks. Use bb_complete to report results instead.` };
+          return { ok: false, error: `Only orchestrator agents can propose tasks. Use bb_complete to report results instead.` };
         }
       }
 
-      const task = blackboardPropose(sessionId, _currentAgentId, args.description, args.task_id);
+      // One task at a time: reject if proposer has un-awarded tasks
+      const bbForCheck = blackboardGet(sessionId);
+      const pendingTasks = bbForCheck.getTasks().filter((t: any) =>
+        t.proposedBy === getCurrentAgentId() && (t.status === "open" || t.status === "bidding")
+      );
+      if (pendingTasks.length > 0) {
+        return { ok: false, error: `You already have a pending task: "${pendingTasks[0].taskId}". Wait for it to be awarded before proposing another.` };
+      }
 
-      // If task was already completed or in progress, don't re-broadcast to bidders
+      const task = blackboardPropose(sessionId, getCurrentAgentId(), args.description, args.task_id);
       if ((task as any).skipped) {
-        console.log(`[bb_propose] Task "${task.taskId}" skipped (status: ${task.status}) — not waking bidders`);
-        return { ok: true, protocol: "blackboard", action: "propose", task,
-          skipped: true,
-          bidders_notified: [],
-          hint: `Task "${task.taskId}" is already ${task.status}. No need to re-dispatch — ${task.status === "completed" ? "results are available via bb_read" : "work is in progress"}.` };
+        return { ok: true, protocol: "blackboard", action: "propose", task, skipped: true,
+          hint: `Task "${task.taskId}" is already ${task.status}.` };
       }
 
-      // Notify all agents via bus so bidders can discover the new task
       const proposedTaskId = task.taskId;
-      busPublish(sessionId, _currentAgentId, "bb:new_task", {
-        task_id: proposedTaskId,
-        description: args.description,
-        proposed_by: _currentAgentId,
-      });
-      // Wake up bidder agents in realtime mode by sending them a task on their task: topic
       const rtSession = realtimeSessions.get(sessionId);
-      const wokenBidders: string[] = [];
-      console.log(`[bb_propose] sessionId=${sessionId}, rtSession=${!!rtSession}, caller=${_currentAgentId}, taskId=${proposedTaskId}`);
-      if (rtSession) {
-        const allAgents = rtSession.systemConfig.agents || [];
-        const bidderAgents = allAgents
-          .filter((a: AgentConfig) => a.id !== _currentAgentId && a.role !== "human" && a.p2p?.bidder === true);
-        console.log(`[bb_propose] Total agents: ${allAgents.length}, bidders found: ${bidderAgents.length}, ids: ${bidderAgents.map((a: AgentConfig) => a.id).join(", ")}`);
-
-        // Fast-path: if ≤2 bidders, auto-assign to the first one (skip full bidding cycle)
-        const p2pGov = rtSession.systemConfig.system?.p2p_governance;
-        const autoAssignThreshold = p2pGov?.auto_assign_threshold ?? 2;
-        if (bidderAgents.length > 0 && bidderAgents.length <= autoAssignThreshold) {
-          // Round-robin among available bidders for fair distribution
-          const assignee = bidderAgents[Math.floor(Math.random() * bidderAgents.length)];
-          console.log(`[bb_propose] Auto-assigning task "${proposedTaskId}" to "${assignee.id}" (only ${bidderAgents.length} bidder(s), threshold=${autoAssignThreshold})`);
-          // Auto-bid, award, and start
-          blackboardBid(sessionId, assignee.id, proposedTaskId, 1.0);
-          blackboardAward(sessionId, proposedTaskId, assignee.id);
-          blackboardStartTask(sessionId, assignee.id, proposedTaskId);
-          busPublish(sessionId, _currentAgentId, "bb:task_awarded", {
-            task_id: proposedTaskId,
-            awarded_to: assignee.id,
-            description: args.description,
-            auto_assigned: true,
-          });
-          return { ok: true, protocol: "blackboard", action: "propose", task,
-            auto_assigned: true,
-            assigned_to: assignee.id,
-            bidders_notified: [],
-            hint: `Task auto-assigned to "${assignee.id}" (${bidderAgents.length} bidder(s) — below threshold ${autoAssignThreshold}, bidding skipped). Use send_task({to: "${assignee.id}", task: "..."}) to deliver the work NOW.` };
-        }
-
-        for (const bidder of bidderAgents) {
-          console.log(`[bb_propose] Waking bidder ${bidder.id} via task:${bidder.id}`);
-          busPublish(sessionId, _currentAgentId, `task:${bidder.id}`, {
-            task: `A new task has been posted on the blackboard (task_id: "${proposedTaskId}"): "${args.description}". Use bb_read to review it, then use bb_bid(task_id="${proposedTaskId}", confidence=<your_confidence_score>) to bid if it matches your expertise. Do NOT execute the task yet — only bid.`,
-            context: `Blackboard bidding request from ${_currentAgentId}. This is a bid request, not a direct task assignment.`,
-            from: _currentAgentId,
-          });
-          wokenBidders.push(bidder.id);
-        }
+      if (!rtSession) {
+        return { ok: true, protocol: "blackboard", action: "propose", task,
+          hint: `Task posted. No realtime session — use bb_read/bb_award manually.` };
       }
+
+      const allAgents = rtSession.systemConfig.agents || [];
+      const bidderAgents = allAgents
+        .filter((a: AgentConfig) => a.id !== getCurrentAgentId() && a.role !== "human" && a.p2p?.bidder === true);
+      console.log(`[bb_propose] Task "${proposedTaskId}" — notifying ${bidderAgents.length} bidder(s)`);
+
+      // Step 1: Notify bidders
+      for (const bidder of bidderAgents) {
+        busPublish(sessionId, getCurrentAgentId(), `bid_request:${bidder.id}`, {
+          task_id: proposedTaskId,
+          description: args.description,
+          proposed_by: getCurrentAgentId(),
+        });
+      }
+
+      // Step 2: Wait for bids (5 seconds)
+      const bidWaitMs = ((rtSession.systemConfig.system?.p2p_governance as any)?.bid_wait_seconds ?? 5) * 1000;
+      console.log(`[bb_propose] Waiting ${bidWaitMs}ms for bids...`);
+      await new Promise(resolve => setTimeout(resolve, bidWaitMs));
+
+      // Step 3: Pick best bidder and dispatch
+      const bb = blackboardGet(sessionId);
+      const currentTask = bb.getTask(proposedTaskId);
+      if (!currentTask || currentTask.bids.length === 0) {
+        console.log(`[bb_propose] No bids after ${bidWaitMs}ms — task stays open`);
+        return { ok: true, protocol: "blackboard", action: "propose", task,
+          awarded: false,
+          hint: `Task "${proposedTaskId}" posted but no bids received after ${bidWaitMs / 1000}s. Agents may be busy. Try again later or use send_task to assign directly.` };
+      }
+
+      const best = currentTask.bids.reduce((a: any, b: any) => a.confidence >= b.confidence ? a : b);
+      console.log(`[bb_propose] Best bidder: "${best.agentId}" (confidence ${best.confidence}, ${currentTask.bids.length} total bid(s))`);
+
+      // Award
+      blackboardAward(sessionId, proposedTaskId, best.agentId, "auto");
+      blackboardStartTask(sessionId, best.agentId, proposedTaskId);
+
+      // Dispatch task to winner via task control
+      const dispatchResult = await realtimeSendTask({
+        to: best.agentId,
+        task: args.description,
+        context: `Awarded via bidding (task_id: ${proposedTaskId}). You won with confidence ${best.confidence}.`,
+      }, signal);
+      console.log(`[bb_propose] Dispatched to "${best.agentId}" (ok=${dispatchResult?.ok})`);
+
       return { ok: true, protocol: "blackboard", action: "propose", task,
-        bidders_notified: wokenBidders,
-        hint: `Task posted to blackboard. ${wokenBidders.length} bidder agent(s) notified: ${wokenBidders.join(", ") || "none"}. Wait briefly, then use bb_read to check for bids before calling bb_award.` };
+        awarded: true,
+        awarded_to: best.agentId,
+        confidence: best.confidence,
+        total_bids: currentTask.bids.length,
+        dispatched: dispatchResult?.ok ?? false,
+        hint: `Task "${proposedTaskId}" awarded and dispatched to "${best.agentId}" (confidence: ${best.confidence}, ${currentTask.bids.length} bid(s)). Use wait_result({from: "${best.agentId}"}) to collect the result.` };
     }
     case "bb_bid": {
-      const sessionId = _currentParentSessionId || "default";
-      const result = blackboardBid(sessionId, _currentAgentId, args.task_id, args.confidence, args.cost, args.reasoning);
+      const sessionId = getCurrentSessionId() || "default";
+      const result = blackboardBid(sessionId, getCurrentAgentId(), args.task_id, args.confidence, args.cost, args.reasoning);
       // Notify proposer that a bid arrived
       if (result.ok) {
-        busPublish(sessionId, _currentAgentId, "bb:bid_received", {
+        busPublish(sessionId, getCurrentAgentId(), "bb:bid_received", {
           task_id: args.task_id,
-          bidder: _currentAgentId,
+          bidder: getCurrentAgentId(),
           confidence: args.confidence,
         });
       }
       return { ...result, protocol: "blackboard", action: "bid" };
     }
     case "bb_award": {
-      const sessionId = _currentParentSessionId || "default";
+      const sessionId = getCurrentSessionId() || "default";
       // If orchestrator_scores provided, compute combined scores and determine winner
       let awardTo = args.award_to;
       let scoringDetails: any[] | undefined;
@@ -4166,26 +4329,35 @@ IMPORTANT RULES:
         blackboardStartTask(sessionId, result.awardedTo, args.task_id);
         // Notify the winner via bus with the task details
         const awardedTask = blackboardGetTask(sessionId, args.task_id);
-        busPublish(sessionId, _currentAgentId, "bb:task_awarded", {
+        busPublish(sessionId, getCurrentAgentId(), "bb:task_awarded", {
           task_id: args.task_id,
           awarded_to: result.awardedTo,
           description: awardedTask?.description || "",
           scoring: scoringDetails || undefined,
         });
+        // Bridge: bid protocol → task control protocol
+        // Route through realtimeSendTask so the task goes through standard
+        // validation, remote routing, and logging — same path as manual send_task.
+        const dispatchResult = await realtimeSendTask({
+          to: result.awardedTo,
+          task: awardedTask?.description || args.task_id,
+          context: `Awarded via blackboard bidding (task_id: ${args.task_id}).${scoringDetails ? ` Combined score: ${scoringDetails[0]?.combined_score}` : ""}`,
+        }, signal);
+        console.log(`[bb_award] Dispatched task "${args.task_id}" to "${result.awardedTo}" via task control (ok=${dispatchResult?.ok})`);
       }
       return { ...result, protocol: "blackboard", action: "award",
         scoring: scoringDetails || undefined,
         next_step: result.ok && result.awardedTo
-          ? `Task awarded to "${result.awardedTo}". NOW send the task to the winner: use send_task({to: "${result.awardedTo}", task: "..."}) in realtime mode, or spawn_subagent({agentId: "${result.awardedTo}", task: "..."}) in manual mode. Then collect results.`
+          ? `Task awarded AND auto-dispatched to "${result.awardedTo}". The agent is now working. Use wait_result({from: "${result.awardedTo}"}) to collect the result. You may also send_task if you need to provide additional details.`
           : undefined };
     }
     case "bb_complete": {
-      const sessionId = _currentParentSessionId || "default";
-      const result = blackboardCompleteTask(sessionId, _currentAgentId, args.task_id, args.result);
+      const sessionId = getCurrentSessionId() || "default";
+      const result = blackboardCompleteTask(sessionId, getCurrentAgentId(), args.task_id, args.result);
       return { ...result, protocol: "blackboard", action: "complete" };
     }
     case "bb_read": {
-      const sessionId = _currentParentSessionId || "default";
+      const sessionId = getCurrentSessionId() || "default";
       // Helper: enrich bids with bidder profile info from agent config
       const enrichTask = (task: any) => {
         if (!task || !task.bids || task.bids.length === 0) return task;
@@ -4215,17 +4387,12 @@ IMPORTANT RULES:
       return { ok: true, protocol: "blackboard", action: "read", tasks: tasks.map(enrichTask), count: tasks.length };
     }
     case "bb_log": {
-      const sessionId = _currentParentSessionId || "default";
+      const sessionId = getCurrentSessionId() || "default";
       const log = blackboardGetLog(sessionId, args.limit || 50);
       return { ok: true, protocol: "blackboard", action: "log", entries: log, count: log.length };
     }
 
     default:
-      // Handle dynamic spawn_<agentId> tools from YAML config
-      if (name.startsWith("spawn_")) {
-        const agentId = name.slice(6); // remove "spawn_" prefix
-        return spawnSubagent({ ...args, agentId }, _currentParentSessionId, _currentSubagentDepth, signal);
-      }
       // Route MCP tools to MCP client
       if (isMcpTool(name)) return callMcpTool(name, args);
       return { ok: false, error: `Unknown tool: ${name}` };

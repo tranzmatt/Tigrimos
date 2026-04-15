@@ -1,6 +1,5 @@
 import fs from "fs/promises";
 import path from "path";
-import { AsyncLocalStorage } from "node:async_hooks";
 
 const DATA_DIR = path.resolve("data");
 
@@ -74,23 +73,17 @@ export interface Settings {
   subAgentMaxConcurrent?: number;
   subAgentTimeout?: number;
   subAgentConfigFile?: string;
-  // Auto Architecture (AI-decided) settings
-  autoArchitectureType?: string;   // "auto" | "hierarchical" | "flat" | "mesh" | "hybrid" | "pipeline" | "p2p"
-  autoAgentCount?: number | string; // number or "auto"
-  autoProtocols?: string[];         // multi-select protocol array
-  autoProtocol?: string;            // legacy single-protocol fallback
-  remoteInstances?: Array<{ id: string; name: string; url: string; token: string; persona?: string; responsibility?: string }>;
-  remotePollInterval?: number;   // seconds — how often to poll remote agent (default: 2)
-  remoteIdleTimeout?: number;    // seconds — abort if no progress for this long (default: 60)
-  remoteMaxTimeout?: number;     // seconds — hard cap regardless of activity (default: 1800)
-  remoteAgentConfig?: string;    // YAML config file for incoming remote tasks ("" = simple chat)
-  staleTaskMaxAge?: number;      // minutes — auto-kill tasks older than this; 0 = disabled (default: 0)
+  remoteEnabled?: boolean; // master toggle – when false, remote token auth and remote UI are disabled
+  remoteAgentConfig?: string; // YAML config file for incoming remote tasks ("" = simple chat)
+  remoteSystemPrompt?: string; // hidden system prompt prepended to incoming remote tasks — instructs how the remote agent answers, invisible to the caller
+  remoteTaskMaxRetries?: number; // max re-delegations on subAgentTimeout for realtime remote tasks (default 2 → up to 3 total attempts)
+  remoteInstances?: Array<{ id: string; name: string; url: string; token: string }>;
+  remoteToken?: string;  // this machine's token for incoming remote connections (separate from accessToken)
   [key: string]: any;
 }
 
-// Per-call settings overrides using AsyncLocalStorage for proper async scoping.
-// When a project chat sets agent overrides, they're stored here and every
-// downstream getSettings() call picks them up automatically.
+// Per-project settings overrides using AsyncLocalStorage for proper async scoping
+import { AsyncLocalStorage } from "async_hooks";
 const _settingsOverrideStore = new AsyncLocalStorage<Partial<Settings>>();
 
 export function runWithSettingsOverride<T>(overrides: Partial<Settings>, fn: () => T): T {
@@ -98,7 +91,7 @@ export function runWithSettingsOverride<T>(overrides: Partial<Settings>, fn: () 
 }
 
 export async function getSettings(): Promise<Settings> {
-  const settings = (await readJSON("settings.json")) as Settings;
+  const settings = await readJSON("settings.json") as Settings;
   const overrides = _settingsOverrideStore.getStore();
   if (overrides) {
     return { ...settings, ...overrides };
@@ -118,7 +111,7 @@ export interface Project {
   workingFolder: string;
   memory: string;
   skills: string[];
-  // Per-project agent overrides (if set, override system settings for this project's chats)
+  // Per-project agent overrides (if set, override system settings)
   agentOverride?: {
     enabled?: boolean;
     subAgentMode?: string;
@@ -166,27 +159,6 @@ export function generateToken(): string {
 
 export async function isValidFileToken(token: string): Promise<boolean> {
   const tokens = await getFileTokens();
-  return tokens.some((t) => t.token === token);
-}
-
-// Remote Bridge Tokens — separate from ACCESS_TOKEN, used by other machines to connect
-export interface RemoteBridgeToken {
-  id: string;
-  name: string;
-  token: string;
-  createdAt: string;
-}
-
-export async function getRemoteBridgeTokens(): Promise<RemoteBridgeToken[]> {
-  return readJSON("remote_bridge_tokens.json");
-}
-
-export async function saveRemoteBridgeTokens(tokens: RemoteBridgeToken[]): Promise<void> {
-  await writeJSON("remote_bridge_tokens.json", tokens);
-}
-
-export async function isValidRemoteBridgeToken(token: string): Promise<boolean> {
-  const tokens = await getRemoteBridgeTokens();
   return tokens.some((t) => t.token === token);
 }
 

@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
-import { useLocation } from "react-router-dom";
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -8,6 +7,8 @@ import { useSocket } from "../hooks/useSocket";
 import { Icon } from "../components/Layout";
 import ReactComponentRenderer from "../components/ReactComponentRenderer";
 import "./ProjectsPage.css";
+
+const AgentEditor = lazy(() => import("../components/AgentEditor"));
 
 interface Project {
   id: string;
@@ -345,21 +346,8 @@ function OutputCanvas({ files }: { files: string[] }) {
   );
 }
 
-// Memoized streaming message
-const StreamingMessage = memo(({ content }: { content: string }) => {
-  if (!content) return null;
-  return (
-    <div className="message assistant">
-      <div className="message-avatar">C</div>
-      <div className="message-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{content}</ReactMarkdown>
-      </div>
-    </div>
-  );
-});
-
 /* ─── Project Chat ─── */
-function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSession }: { project: Project; allSkills: Skill[]; initialSessionId?: string | null; onConsumeInitialSession?: () => void }) {
+function ProjectChat({ project, allSkills }: { project: Project; allSkills: Skill[] }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -374,85 +362,43 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
   const [activityLogContent, setActivityLogContent] = useState("");
   const [showChatLog, setShowChatLog] = useState(false);
   const [chatLogContent, setChatLogContent] = useState("");
+  const [autoCreatedArch, setAutoCreatedArch] = useState<{ filename: string; systemName: string } | null>(null);
+  const [showAgentEditor, setShowAgentEditor] = useState(false);
+  const [agentEditorYaml, setAgentEditorYaml] = useState<string | undefined>();
+  const [agentEditorFilename, setAgentEditorFilename] = useState<string | undefined>();
   const activityLogRef = useRef<HTMLDivElement>(null);
   const chatLogRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { connected, sendProjectMessage, onChunk, onResponse, onStatus } = useSocket();
+  const { connected, sendProjectMessage, onChunk, onResponse, onStatus, socket: socketRef } = useSocket();
 
-  // Throttled streaming: batch chunks
-  const streamBufferRef = useRef("");
-  const streamFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushStreamBuffer = useCallback(() => {
-    streamFlushTimerRef.current = null;
-    if (streamBufferRef.current) {
-      const buf = streamBufferRef.current;
-      streamBufferRef.current = "";
-      setStreaming((prev) => prev + buf);
+  // Collect all output files from messages for the right panel
+  const allOutputFiles = messages.reduce<{ files: string[]; msgIndex: number }[]>((acc, msg, i) => {
+    if (msg.files && msg.files.length > 0) {
+      acc.push({ files: msg.files, msgIndex: i });
     }
+    return acc;
   }, []);
-
-  // Throttled status
-  const pendingStatusRef = useRef<string | null>(null);
-  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const setThrottledStatus = useCallback((s: string) => {
-    pendingStatusRef.current = s;
-    if (!statusTimerRef.current) {
-      statusTimerRef.current = setTimeout(() => {
-        statusTimerRef.current = null;
-        if (pendingStatusRef.current !== null) {
-          setStatus(pendingStatusRef.current);
-          pendingStatusRef.current = null;
-        }
-      }, 200);
-    }
-  }, []);
-
-  // Collect all unique output files from messages for the right panel
-  const allOutputFiles = useMemo(() => {
-    const seen = new Set<string>();
-    const groups: { files: string[]; msgIndex: number }[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (msg.files && msg.files.length > 0) {
-        const uniqueFiles = msg.files.filter(f => {
-          if (seen.has(f)) return false;
-          seen.add(f);
-          return true;
-        });
-        if (uniqueFiles.length > 0) {
-          groups.push({ files: uniqueFiles, msgIndex: i });
-        }
-      }
-    }
-    return groups;
-  }, [messages]);
 
   // Load sessions that belong to this project (prefixed with [ProjectName])
   useEffect(() => {
     api.getSessions().then((all: Session[]) => {
       const prefix = `[${project.name}]`;
-      let projectSessions = all.filter((s) => s.title.startsWith(prefix));
-      // If a deep-link session was requested, ensure it's present in the list
-      // even if the title-prefix filter would have missed it (e.g. project renamed).
-      if (initialSessionId) {
-        const deep = all.find((s) => s.id === initialSessionId);
-        if (deep && !projectSessions.some((s) => s.id === deep.id)) {
-          projectSessions = [deep, ...projectSessions];
-        }
-      }
+      const projectSessions = all.filter((s) => s.title.startsWith(prefix));
       setSessions(projectSessions);
-      if (initialSessionId) {
-        setActiveSession(initialSessionId);
-        onConsumeInitialSession?.();
-      }
     });
-  }, [project.id, project.name, initialSessionId]);
+  }, [project.id, project.name]);
 
   useEffect(() => {
     if (activeSession) {
       api.getSession(activeSession).then((session: any) => {
         setMessages(session.messages || []);
+        // Restore auto-created architecture button if present
+        if (session.autoCreatedArch) {
+          setAutoCreatedArch(session.autoCreatedArch);
+        } else {
+          setAutoCreatedArch(null);
+        }
       });
     }
   }, [activeSession]);
@@ -515,18 +461,9 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
   }, [activeSession, connected]);
 
   useEffect(() => {
-    const unsub1 = onChunk((data: any) => {
+    const unsub1 = onChunk((data) => {
       if (data.sessionId === activeSession) {
-        if (data.clear) {
-          streamBufferRef.current = "";
-          if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
-          setStreaming("");
-        } else {
-          streamBufferRef.current += data.content;
-          if (!streamFlushTimerRef.current) {
-            streamFlushTimerRef.current = setTimeout(flushStreamBuffer, 150);
-          }
-        }
+        setStreaming((prev) => prev + data.content);
       }
     });
     const unsub2 = onResponse((data) => {
@@ -550,7 +487,7 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
           return next;
         });
       }
-      if (data.sessionId && (data.status === "thinking" || data.status === "tool_call" || data.status === "running_python" || data.status === "retrying" || (data.status === "running" && data.content && data.label))) {
+      if (data.sessionId && (data.status === "thinking" || data.status === "tool_call" || data.status === "running_python" || data.status === "retrying")) {
         setActiveTaskSessions((prev) => {
           if (prev.has(data.sessionId)) return prev;
           const next = new Set(prev);
@@ -561,45 +498,45 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
 
       if (data.sessionId && data.sessionId !== activeSession) return;
 
-      if (data.status === "thinking") { setIsLoading(true); setThrottledStatus("Thinking..."); }
+      if (data.status === "thinking") { setIsLoading(true); setStatus("Thinking..."); }
       else if (data.status === "tool_call") {
         setIsLoading(true);
         if (data.tool === "send_task" && data.args) {
           const target = data.args.to || "agent";
           const taskPreview = data.args.task ? ` — ${data.args.task.slice(0, 60)}` : "";
-          setThrottledStatus(`Delegating to ${target}${taskPreview}...`);
+          setStatus(`Delegating to ${target}${taskPreview}...`);
         } else if (data.tool === "wait_result" && data.args) {
-          setThrottledStatus(`Waiting for ${data.args.from || "agent"} to finish...`);
+          setStatus(`Waiting for ${data.args.from || "agent"} to finish...`);
         } else {
-          setThrottledStatus(`${toolLabels[data.tool] || data.tool}...`);
+          setStatus(`${toolLabels[data.tool] || data.tool}...`);
         }
       }
       else if (data.status === "tool_result") {
-        if (data.tool === "wait_result") setThrottledStatus("Agent result received, thinking...");
-        else if (data.tool === "send_task") setThrottledStatus("Task delegated, orchestrating...");
-        else setThrottledStatus(`${toolLabels[data.tool] || data.tool} done, thinking...`);
+        if (data.tool === "wait_result") setStatus("Agent result received, thinking...");
+        else if (data.tool === "send_task") setStatus("Task delegated, orchestrating...");
+        else setStatus(`${toolLabels[data.tool] || data.tool} done, thinking...`);
       }
-      else if (data.status === "subagent_spawn") { setIsLoading(true); setThrottledStatus(`Sub-agent "${data.label}" spawned...`); }
-      else if (data.status === "subagent_tool") {
-        setIsLoading(true);
-        if (data.tool === "remote_progress" && data.content) {
-          setThrottledStatus(`Remote "${data.label}": ${data.content.slice(0, 100)}`);
-        } else if (data.tool === "remote_task") {
-          setThrottledStatus(`Sub-agent "${data.label}": delegating to remote...`);
-        } else {
-          setThrottledStatus(`Sub-agent "${data.label}": ${toolLabels[data.tool] || data.tool}...`);
-        }
-      }
-      else if (data.status === "subagent_done") setThrottledStatus(`Sub-agent "${data.label}" completed`);
-      else if (data.status === "subagent_error") setThrottledStatus(`Sub-agent "${data.label}" failed: ${data.error}`);
-      else if (data.status === "running" && data.content && data.label) {
-        setIsLoading(true);
-        setThrottledStatus(`Remote "${data.label}": ${data.content.slice(0, 100)}`);
-      }
-      else setThrottledStatus("");
+      else if (data.status === "subagent_spawn") { setIsLoading(true); setStatus(`Sub-agent "${data.label}" spawned...`); }
+      else if (data.status === "subagent_tool") { setIsLoading(true); setStatus(`Sub-agent "${data.label}": ${toolLabels[data.tool] || data.tool}...`); }
+      else if (data.status === "subagent_done") setStatus(`Sub-agent "${data.label}" completed`);
+      else if (data.status === "subagent_error") setStatus(`Sub-agent "${data.label}" failed: ${data.error}`);
+      else setStatus("");
     });
     return () => { unsub1(); unsub2(); unsub3(); };
   }, [activeSession, onChunk, onResponse, onStatus]);
+
+  // ─── Listen for auto-created architecture events ───
+  useEffect(() => {
+    const sock = socketRef.current;
+    if (!sock) return;
+    const handler = (data: { sessionId: string; filename: string; systemName: string }) => {
+      if (data.sessionId === activeSession) {
+        setAutoCreatedArch({ filename: data.filename, systemName: data.systemName });
+      }
+    };
+    sock.on("chat:architecture-created", handler);
+    return () => { sock.off("chat:architecture-created", handler); };
+  }, [activeSession, socketRef]);
 
   // ─── Activity log polling ───
   useEffect(() => {
@@ -643,28 +580,8 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
     return () => { cancelled = true; clearInterval(iv); };
   }, [showChatLog, activeSession, isLoading]);
 
-  // ─── Sub-agent reasoning stream → append to chat log panel ───
   useEffect(() => {
-    if (!showChatLog || !activeSession) return;
-    const unsub = onStatus((data: any) => {
-      if (data?.sessionId && data.sessionId !== activeSession) return;
-      if (data?.status !== "subagent_text" && data?.status !== "realtime_agent_text") return;
-      const text = typeof data?.text === "string" ? data.text : "";
-      if (!text) return;
-      const label = data?.label || data?.agent || "agent";
-      setChatLogContent((prev) => prev + `\n[${label} thinking] ${text}`);
-    });
-    return unsub;
-  }, [showChatLog, activeSession, onStatus]);
-
-  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!scrollTimerRef.current) {
-      scrollTimerRef.current = setTimeout(() => {
-        scrollTimerRef.current = null;
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-      }, 200);
-    }
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
   const createNewSession = async () => {
@@ -804,6 +721,26 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
               </svg>
               <span>Export</span>
             </button>
+            {autoCreatedArch && (
+              <button
+                className="activity-log-toggle active"
+                onClick={async () => {
+                  try {
+                    const data = await api.getAgentConfig(autoCreatedArch.filename);
+                    setAgentEditorYaml(data.content);
+                    setAgentEditorFilename(autoCreatedArch.filename);
+                    setShowAgentEditor(true);
+                  } catch {}
+                }}
+                title={`View auto-created architecture: ${autoCreatedArch.systemName}`}
+                style={{ borderColor: "#8b5cf6", color: "#8b5cf6", background: "rgba(139, 92, 246, 0.15)" }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-7.07-2.93 2.83-2.83m8.48-8.48 2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83"/>
+                </svg>
+                <span>{autoCreatedArch.systemName}</span>
+              </button>
+            )}
           </div>
           {showActivityLog && (
             <div className="activity-log-panel">
@@ -877,7 +814,14 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
                   </div>
                 </div>
               ))}
-              <StreamingMessage content={streaming} />
+              {streaming && (
+                <div className="message assistant">
+                  <div className="message-avatar">C</div>
+                  <div className="message-content">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{streaming}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
               {status && <div className="chat-status">{status}</div>}
               <div ref={messagesEndRef} />
             </div>
@@ -941,6 +885,23 @@ function ProjectChat({ project, allSkills, initialSessionId, onConsumeInitialSes
           </button>
         )}
       </div>
+
+      {/* Agent Editor modal for viewing auto-created architectures */}
+      {showAgentEditor && (
+        <Suspense fallback={<div style={{ padding: 40, textAlign: "center" }}>Loading editor...</div>}>
+          <AgentEditor
+            onClose={() => { setShowAgentEditor(false); setAgentEditorYaml(undefined); setAgentEditorFilename(undefined); }}
+            onSave={(filename: string, content: string) => {
+              api.saveAgentConfig(filename, content);
+              setShowAgentEditor(false);
+              setAgentEditorYaml(undefined);
+              setAgentEditorFilename(undefined);
+            }}
+            initialYaml={agentEditorYaml}
+            initialFilename={agentEditorFilename}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -972,8 +933,6 @@ export default function ProjectsPage() {
   const [agentOverride, setAgentOverride] = useState<any>({});
   const [agentConfigs, setAgentConfigs] = useState<any[]>([]);
   const [showAgentDetail, setShowAgentDetail] = useState(false);
-  const [initialSessionId, setInitialSessionId] = useState<string | null>(null);
-  const location = useLocation();
 
   useEffect(() => {
     api.getProjects().then(setProjects);
@@ -981,25 +940,6 @@ export default function ProjectsPage() {
     api.getSettings().then((s: any) => setSandboxDir(s.sandboxDir || ""));
     api.getAgentConfigs().then(setAgentConfigs).catch(() => {});
   }, []);
-
-  // Honor ?project=<id>&session=<id> deep link from Finished Tasks "Open Chat"
-  // Re-runs whenever the URL changes or projects finish loading.
-  useEffect(() => {
-    if (projects.length === 0) return;
-    try {
-      const params = new URLSearchParams(location.search);
-      const pid = params.get("project");
-      const sid = params.get("session");
-      if (!pid) return;
-      const match = projects.find((p) => p.id === pid);
-      if (!match) return;
-      setActiveProject(match);
-      setTab("chat");
-      setEditing(false);
-      setShowAgentDetail(false);
-      if (sid) setInitialSessionId(sid);
-    } catch {}
-  }, [location.search, projects]);
 
   useEffect(() => {
     if (activeProject) {
@@ -1553,12 +1493,7 @@ export default function ProjectsPage() {
 
             <div className={`project-tab-content ${tab === "chat" ? "chat-tab-active" : ""} ${tab === "files" ? "files-tab-active" : ""}`}>
               {tab === "chat" && (
-                <ProjectChat
-                  project={activeProject}
-                  allSkills={allSkills}
-                  initialSessionId={initialSessionId}
-                  onConsumeInitialSession={() => setInitialSessionId(null)}
-                />
+                <ProjectChat project={activeProject} allSkills={allSkills} />
               )}
 
               {tab === "overview" && (

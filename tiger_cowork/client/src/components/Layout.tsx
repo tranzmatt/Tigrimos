@@ -97,7 +97,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <Icon name={sidebarOpen ? "close" : "menu"} />
         </button>
         <div className="header-logo">
-          <img src="/tigrimos-logo.png" alt="TigrimOS Swarm Agents" className="header-logo-img" />
+          <span className="logo-text">Tiger CoWork</span>
           <span className="logo-badge">AI</span>
           {swarmEnabled && agentMode === "realtime" && <span className="logo-realtime-tag">Realtime Agent</span>}
           {swarmEnabled && agentMode === "auto_create" && <span className="logo-auto-arch-tag">Auto Create Architecture</span>}

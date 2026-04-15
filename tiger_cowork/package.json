@@ -1,9 +1,9 @@
 {
   "name": "cowork",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "scripts": {
-    "dev": "tsx watch --ignore './client/**' --ignore './data/**' --ignore './sandbox/**' --ignore './skills/**' --ignore './Tiger_bot/**' server/index.ts",
+    "dev": "tsx watch server/index.ts",
     "build": "cd client && npx vite build",
     "postinstall": "npm i -g clawhub",
     "start": "NODE_ENV=production tsx server/index.ts"
@@ -23,7 +23,6 @@
     "node-cron": "^3.0.3",
     "pdf-parse": "^2.4.5",
     "rehype-raw": "^7.0.0",
-    "node-pty": "^1.0.0",
     "socket.io": "^4.7.4",
     "uuid": "^9.0.0",
     "vite": "^7.3.1",

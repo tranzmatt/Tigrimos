@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 interface AgentGraphicProps {
   agentTools: Record<string, string[]>;
@@ -484,53 +484,58 @@ export default function AgentGraphic({ agentTools, activeAgents, doneAgents }: A
   // Load background image once
   useEffect(() => {
     const img = new Image();
-    img.src = "/agent-bg.webp";
+    img.src = "/minecraft-bg.webp";
     img.onload = () => { bgImageRef.current = img; };
   }, []);
 
-  useEffect(() => {
-    // Init/update agent positions based on current agent list and canvas width
+  const initAgents = useCallback(() => {
     const names = Object.keys(agentTools);
-    const map = agentsRef.current;
-    if (names.length > 0) {
-      const cols = Math.min(names.length, Math.max(3, Math.ceil(Math.sqrt(names.length * 2))));
-      const rows = Math.ceil(names.length / cols);
-      const spacingX = (canvasWidth - 100) / Math.max(cols - 1, 1);
-      const spacingY = rows > 1 ? (Y_MAX - Y_MIN) / (rows - 1) : 0;
-      const startX = 50;
+    if (names.length === 0) return;
 
-      names.forEach((name, i) => {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        const homeX = startX + col * spacingX;
-        const homeY = rows > 1 ? Y_MIN + row * spacingY : (Y_MIN + Y_MAX) / 2;
-        const existing = map.get(name);
-        if (existing) {
-          existing.homeX = homeX;
-          existing.homeY = homeY;
-          if (!existing.interacting) {
-            existing.targetX = homeX;
-            existing.targetY = homeY;
-          }
-        } else {
-          map.set(name, {
-            name, charTemplate: getCharForAgent(name),
-            x: homeX, y: homeY,
-            targetX: homeX, targetY: homeY,
-            homeX, homeY,
-            frame: 0, status: "waiting",
-            lastTool: "", facing: "front",
-            bubbleText: "Ready",
-            interacting: false,
-          });
+    const cols = Math.min(names.length, Math.max(3, Math.ceil(Math.sqrt(names.length * 2))));
+    const rows = Math.ceil(names.length / cols);
+    const spacingX = (canvasWidth - 100) / Math.max(cols - 1, 1);
+    const spacingY = rows > 1 ? (Y_MAX - Y_MIN) / (rows - 1) : 0;
+    const startX = 50;
+
+    const map = agentsRef.current;
+    names.forEach((name, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const homeX = startX + col * spacingX;
+      const homeY = rows > 1 ? Y_MIN + row * spacingY : (Y_MIN + Y_MAX) / 2;
+      const existing = map.get(name);
+      if (existing) {
+        existing.homeX = homeX;
+        existing.homeY = homeY;
+        if (!existing.interacting) {
+          existing.targetX = homeX;
+          existing.targetY = homeY;
         }
-      });
-      for (const key of map.keys()) {
-        if (!names.includes(key)) map.delete(key);
+      } else {
+        map.set(name, {
+          name, charTemplate: getCharForAgent(name),
+          x: homeX, y: homeY,
+          targetX: homeX, targetY: homeY,
+          homeX, homeY,
+          frame: 0, status: "waiting",
+          lastTool: "", facing: "front",
+          bubbleText: "Ready",
+          interacting: false,
+        });
       }
+    });
+    for (const key of map.keys()) {
+      if (!names.includes(key)) map.delete(key);
     }
+  }, [agentTools, canvasWidth]);
+
+  useEffect(() => {
+    initAgents();
+    const map = agentsRef.current;
     const activeSet = new Set(activeAgents);
     const doneSet = new Set(doneAgents);
+    const names = Object.keys(agentTools);
     const prevCounts = prevToolCountsRef.current;
 
     for (const name of names) {
@@ -538,9 +543,8 @@ export default function AgentGraphic({ agentTools, activeAgents, doneAgents }: A
       if (!agent) continue;
       const tools = agentTools[name] || [];
       const prevCount = prevCounts[name] || 0;
-      // Handle server-side trimming: if array is shorter than our count, reset
-      const effectivePrev = prevCount > tools.length ? 0 : prevCount;
-      const newTools = tools.slice(effectivePrev);
+      // Handle server-side trimming: if count went down, treat all as new
+      const newTools = tools.length >= prevCount ? tools.slice(prevCount) : tools.slice(-1);
 
       if (activeSet.has(name)) {
         agent.status = "active";
@@ -588,8 +592,7 @@ export default function AgentGraphic({ agentTools, activeAgents, doneAgents }: A
       prevCounts[name] = tools.length;
     }
     prevToolCountsRef.current = prevCounts;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentTools, activeAgents, doneAgents, canvasWidth]);
+  }, [agentTools, activeAgents, doneAgents, initAgents]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -611,178 +614,151 @@ export default function AgentGraphic({ agentTools, activeAgents, doneAgents }: A
     canvas.width = canvasWidth;
     canvas.height = CANVAS_H;
     let running = true;
-    let lastFrameTime = 0;
-    const FRAME_INTERVAL = 50; // ~20fps — pixel art doesn't need 60fps
-    let paused = false;
+    const sortBuf: AgentState[] = []; // reusable buffer for sorting
 
-    // Pause animation when tab is hidden to avoid rAF stalling
-    const onVisibility = () => {
-      paused = document.hidden;
-      if (!paused && running) {
-        lastFrameTime = 0; // reset so first frame after resume renders immediately
-        animRef.current = requestAnimationFrame(render);
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-
-    const render = (now: number) => {
-      if (!running || paused) return;
-
-      // Throttle to ~20fps to save GPU/memory
-      if (lastFrameTime && now - lastFrameTime < FRAME_INTERVAL) {
-        animRef.current = requestAnimationFrame(render);
-        return;
-      }
-      // Compute delta time (capped at 500ms to avoid huge jumps after tab switch)
-      const dt = lastFrameTime ? Math.min(now - lastFrameTime, 500) : FRAME_INTERVAL;
-      lastFrameTime = now;
-
-      tickRef.current = (tickRef.current + 1) % 100000; // prevent unbounded growth
+    const render = () => {
+      if (!running) return;
+      tickRef.current++;
       const tick = tickRef.current;
 
-      try {
-        ctx.clearRect(0, 0, canvasWidth, CANVAS_H);
+      ctx.clearRect(0, 0, canvasWidth, CANVAS_H);
 
-        // Draw background image (cover the canvas)
-        if (bgImageRef.current) {
-          const img = bgImageRef.current;
-          const scale = Math.max(canvasWidth / img.width, CANVAS_H / img.height);
-          const sw = canvasWidth / scale;
-          const sh = CANVAS_H / scale;
-          const sx = (img.width - sw) / 2;
-          const sy = (img.height - sh) / 2;
-          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvasWidth, CANVAS_H);
-        }
+      // Draw background image (cover-fit) or fallback to gradient
+      const bgImg = bgImageRef.current;
+      if (bgImg && bgImg.complete && bgImg.naturalWidth > 0) {
+        const scale = Math.max(canvasWidth / bgImg.naturalWidth, CANVAS_H / bgImg.naturalHeight);
+        const sw = canvasWidth / scale;
+        const sh = CANVAS_H / scale;
+        const sx = (bgImg.naturalWidth - sw) / 2;
+        const sy = (bgImg.naturalHeight - sh) / 2;
+        ctx.drawImage(bgImg, sx, sy, sw, sh, 0, 0, canvasWidth, CANVAS_H);
+      } else {
+        // Fallback: original gradient
+        const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+        grad.addColorStop(0, "rgba(10,14,25,0.97)");
+        grad.addColorStop(0.7, "rgba(20,28,40,0.97)");
+        grad.addColorStop(1, "rgba(30,50,30,0.97)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvasWidth, CANVAS_H);
+      }
 
-        // Sort by Y for depth
-        const agents = Array.from(agentsRef.current.values());
-        agents.sort((a, b) => a.y - b.y);
+      // Sort by Y for depth (reuse array to reduce GC pressure)
+      const agents = sortBuf;
+      agents.length = 0;
+      for (const a of agentsRef.current.values()) agents.push(a);
+      agents.sort((a, b) => a.y - b.y);
 
-        // Lerp factor scaled by delta time (target: 0.06 per 50ms frame)
-        const lerp = 1 - Math.pow(1 - 0.06, dt / FRAME_INTERVAL);
+      for (const agent of agents) {
+        const dx = agent.targetX - agent.x;
+        const dy = agent.targetY - agent.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const isMoving = dist > 2;
 
-        for (const agent of agents) {
-          const dx = agent.targetX - agent.x;
-          const dy = agent.targetY - agent.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          const isMoving = dist > 2;
-
-          if (isMoving) {
-            agent.x += dx * lerp;
-            agent.y += dy * lerp;
-            agent.facing = Math.abs(dx) > 2 ? (dx > 0 ? "right" : "left") : agent.facing;
-            if (tick % 6 === 0) agent.frame = agent.frame === 0 ? 1 : 0;
-          } else {
-            agent.x = agent.targetX;
-            agent.y = agent.targetY;
-            if (agent.status === "active" && tick % 18 === 0) {
-              agent.frame = agent.frame === 0 ? 1 : 0;
-            } else if (agent.status !== "active") {
-              agent.frame = 0;
-              if (!agent.interacting) agent.facing = "front";
-            }
-          }
-
-          const depthFactor = 0.75 + 0.25 * ((agent.y - Y_MIN) / Math.max(Y_MAX - Y_MIN, 1));
-          const charCX = agent.x + CHAR_PX_W / 2;
-
-          // Shadow
-          ctx.fillStyle = `rgba(0,0,0,${0.1 + 0.08 * depthFactor})`;
-          ctx.beginPath();
-          ctx.ellipse(charCX, agent.y + CHAR_PX_H * depthFactor + 2, 14 * depthFactor, 3 * depthFactor, 0, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Draw character
-          const alpha = agent.status === "done" ? 0.75 : agent.status === "waiting" ? 0.85 : 1;
-          ctx.globalAlpha = alpha;
-          ctx.save();
-          ctx.translate(agent.x, agent.y);
-          ctx.scale(depthFactor, depthFactor);
-          drawChar(ctx, 0, 0, agent.charTemplate, agent.frame, agent.facing);
-          ctx.restore();
-          ctx.globalAlpha = 1;
-
-          // Active glow
-          if (agent.status === "active") {
-            const firstColor = Object.values(agent.charTemplate.palette)[0] || "#fff";
-            const glow = 0.15 + 0.12 * Math.sin(tick * 0.1);
-            ctx.fillStyle = `rgba(${hexToRgb(firstColor)}, ${glow})`;
-            ctx.beginPath();
-            ctx.ellipse(charCX, agent.y + CHAR_PX_H * depthFactor + 2, 18 * depthFactor, 5 * depthFactor, 0, 0, Math.PI * 2);
-            ctx.fill();
-          } else if (agent.status === "done") {
-            ctx.fillStyle = "#10b981";
-            ctx.font = `bold ${Math.round(14 * depthFactor)}px sans-serif`;
-            ctx.textAlign = "center";
-            ctx.fillText("\u2713", charCX, agent.y - 2);
-          }
-
-          // Name (always under character)
-          ctx.font = `bold ${Math.round(9 * depthFactor)}px 'Courier New', monospace`;
-          ctx.textAlign = "center";
-          ctx.fillStyle = agent.status === "done" ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.85)";
-          const nameY = agent.y + CHAR_PX_H * depthFactor + NAME_H;
-          ctx.fillText(truncName(agent.name, 16), charCX, nameY);
-          // Character type label
-          ctx.font = `${Math.round(7 * depthFactor)}px 'Courier New', monospace`;
-          ctx.fillStyle = "rgba(255,255,255,0.35)";
-          ctx.fillText(agent.charTemplate.name, charCX, nameY + 10 * depthFactor);
-
-          // Speech bubble (persistent while active)
-          if (agent.status === "active" && agent.bubbleText) {
-            drawBubble(ctx, charCX, agent.y - 2, agent.bubbleText, 150, canvasWidth);
-          } else if (agent.status === "done") {
-            ctx.globalAlpha = 0.8;
-            drawBubble(ctx, charCX, agent.y - 2, "Done!", 70, canvasWidth);
-            ctx.globalAlpha = 1;
-          }
-
-          // Connection lines between interacting agents
-          if (agent.interacting && agent.status === "active") {
-            for (const other of agents) {
-              if (other === agent || !other.interacting || other.status !== "active") continue;
-              const ax = charCX, ay = agent.y + CHAR_PX_H * depthFactor / 2;
-              const ox = other.x + CHAR_PX_W / 2, oy = other.y + CHAR_PX_H * depthFactor / 2;
-              if (Math.sqrt((ox - ax) ** 2 + (oy - ay) ** 2) < 220) {
-                ctx.save();
-                const fc = Object.values(agent.charTemplate.palette)[0] || "#888";
-                ctx.strokeStyle = `rgba(${hexToRgb(fc)}, 0.25)`;
-                ctx.lineWidth = 1;
-                ctx.setLineDash([3, 3]);
-                ctx.beginPath();
-                ctx.moveTo(ax, ay);
-                ctx.lineTo(ox, oy);
-                ctx.stroke();
-                ctx.setLineDash([]);
-                ctx.restore();
-              }
-            }
+        if (isMoving) {
+          agent.x += dx * 0.06;
+          agent.y += dy * 0.06;
+          agent.facing = Math.abs(dx) > 2 ? (dx > 0 ? "right" : "left") : agent.facing;
+          if (tick % 6 === 0) agent.frame = agent.frame === 0 ? 1 : 0;
+        } else {
+          agent.x = agent.targetX;
+          agent.y = agent.targetY;
+          if (agent.status === "active" && tick % 18 === 0) {
+            agent.frame = agent.frame === 0 ? 1 : 0;
+          } else if (agent.status !== "active") {
+            agent.frame = 0;
+            if (!agent.interacting) agent.facing = "front";
           }
         }
 
-        // Reset any leaked canvas state
+        const depthFactor = 0.75 + 0.25 * ((agent.y - Y_MIN) / Math.max(Y_MAX - Y_MIN, 1));
+        const charCX = agent.x + CHAR_PX_W / 2;
+
+        // Shadow
+        ctx.fillStyle = `rgba(0,0,0,${0.1 + 0.08 * depthFactor})`;
+        ctx.beginPath();
+        ctx.ellipse(charCX, agent.y + CHAR_PX_H * depthFactor + 2, 14 * depthFactor, 3 * depthFactor, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Draw character
+        const alpha = agent.status === "done" ? 0.4 : agent.status === "waiting" ? 0.55 : 1;
+        ctx.globalAlpha = alpha;
+        ctx.save();
+        ctx.translate(agent.x, agent.y);
+        ctx.scale(depthFactor, depthFactor);
+        drawChar(ctx, 0, 0, agent.charTemplate, agent.frame, agent.facing);
+        ctx.restore();
         ctx.globalAlpha = 1;
-        ctx.setLineDash([]);
-      } catch {
-        // Render error — skip this frame, loop continues next frame
+
+        // Active glow
+        if (agent.status === "active") {
+          const firstColor = Object.values(agent.charTemplate.palette)[0] || "#fff";
+          const glow = 0.15 + 0.12 * Math.sin(tick * 0.1);
+          ctx.fillStyle = `rgba(${hexToRgb(firstColor)}, ${glow})`;
+          ctx.beginPath();
+          ctx.ellipse(charCX, agent.y + CHAR_PX_H * depthFactor + 2, 18 * depthFactor, 5 * depthFactor, 0, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (agent.status === "done") {
+          ctx.fillStyle = "#10b981";
+          ctx.font = `bold ${Math.round(14 * depthFactor)}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.fillText("\u2713", charCX, agent.y - 2);
+        }
+
+        // Name (always under character)
+        ctx.font = `bold ${Math.round(9 * depthFactor)}px 'Courier New', monospace`;
+        ctx.textAlign = "center";
+        ctx.fillStyle = agent.status === "done" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.85)";
+        const nameY = agent.y + CHAR_PX_H * depthFactor + NAME_H;
+        ctx.fillText(truncName(agent.name, 16), charCX, nameY);
+        // Character type label
+        ctx.font = `${Math.round(7 * depthFactor)}px 'Courier New', monospace`;
+        ctx.fillStyle = "rgba(255,255,255,0.35)";
+        ctx.fillText(agent.charTemplate.name, charCX, nameY + 10 * depthFactor);
+
+        // Speech bubble (persistent while active)
+        if (agent.status === "active" && agent.bubbleText) {
+          drawBubble(ctx, charCX, agent.y - 2, agent.bubbleText, 150, canvasWidth);
+        } else if (agent.status === "done") {
+          ctx.globalAlpha = 0.5;
+          drawBubble(ctx, charCX, agent.y - 2, "Done!", 70, canvasWidth);
+          ctx.globalAlpha = 1;
+        }
+
+        // Connection lines between interacting agents
+        if (agent.interacting && agent.status === "active") {
+          for (const other of agents) {
+            if (other === agent || !other.interacting || other.status !== "active") continue;
+            const ax = charCX, ay = agent.y + CHAR_PX_H * depthFactor / 2;
+            const ox = other.x + CHAR_PX_W / 2, oy = other.y + CHAR_PX_H * depthFactor / 2;
+            if (Math.sqrt((ox - ax) ** 2 + (oy - ay) ** 2) < 220) {
+              ctx.save();
+              const fc = Object.values(agent.charTemplate.palette)[0] || "#888";
+              ctx.strokeStyle = `rgba(${hexToRgb(fc)}, 0.25)`;
+              ctx.lineWidth = 1;
+              ctx.setLineDash([3, 3]);
+              ctx.beginPath();
+              ctx.moveTo(ax, ay);
+              ctx.lineTo(ox, oy);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.restore();
+            }
+          }
+        }
       }
 
       animRef.current = requestAnimationFrame(render);
     };
 
     animRef.current = requestAnimationFrame(render);
-    return () => {
-      running = false;
-      cancelAnimationFrame(animRef.current);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
+    return () => { running = false; cancelAnimationFrame(animRef.current); };
   }, [canvasWidth]);
 
   if (Object.keys(agentTools).length === 0) return null;
 
   return (
     <div style={{
-      background: "#1a1a1a",
+      background: "transparent",
       borderRadius: 8,
       border: "1px solid rgba(255,255,255,0.1)",
       overflow: "hidden",
@@ -805,17 +781,12 @@ function hexToRgb(hex: string): string {
 
 const COMM_TOOLS = new Set([
   "send_task", "wait_result", "bb_bid", "bb_propose", "bb_award",
-  "proto_tcp_send", "proto_bus_publish", "spawn_subagent", "remote_task",
+  "proto_tcp_send", "proto_bus_publish", "spawn_subagent",
 ]);
 
-function isCommTool(tool: string): boolean { return COMM_TOOLS.has(tool) || tool.startsWith("remote:"); }
+function isCommTool(tool: string): boolean { return COMM_TOOLS.has(tool); }
 
 function formatToolText(tool: string): string {
-  // Remote progress — "remote:<actual status text>" → show the real content
-  if (tool.startsWith("remote:")) {
-    const content = tool.slice(7).trim();
-    return content || "Working remotely...";
-  }
   const m: Record<string, string> = {
     web_search: "Searching the web...", fetch_url: "Fetching a page...",
     run_python: "Running Python...", run_react: "Building UI...",
@@ -823,7 +794,6 @@ function formatToolText(tool: string): string {
     write_file: "Writing file...", list_files: "Listing files...",
     send_task: "Hey, got a task for you!", wait_result: "Waiting for results...",
     check_agents: "Checking the team...",
-    remote_task: "Delegating to remote!", remote_progress: "Working remotely...",
     bb_propose: "I'm proposing a task!", bb_bid: "I'll bid on this!",
     bb_award: "Awarding the task!", bb_complete: "Task complete!",
     bb_read: "Checking the board...", bb_log: "Reading audit log...",
@@ -833,6 +803,7 @@ function formatToolText(tool: string): string {
     clawhub_search: "Searching ClawHub...", clawhub_install: "Installing skill...",
     spawn_subagent: "Spawning helper!",
   };
+  if (tool.startsWith("remote:")) return `📡 ${tool.slice(7)}`;
   return m[tool] || `Using ${tool}...`;
 }
 
