@@ -7,6 +7,7 @@ import TasksPage from "./pages/TasksPage";
 import SkillsPage from "./pages/SkillsPage";
 import SettingsPage from "./pages/SettingsPage";
 import ProjectsPage from "./pages/ProjectsPage";
+import TerminalPage from "./pages/TerminalPage";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/files" element={<FilesPage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/terminal" element={<TerminalPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </Layout>

@@ -58,6 +58,32 @@ struct ContentView: View {
                             .scaleEffect(0.7)
                     }
 
+                    // Terminal — SSH into VM
+                    Button {
+                        if let ip = vmManager.vmIPAddress {
+                            let script = """
+                            tell application "Terminal"
+                                do script "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null tigris@\(ip)"
+                                activate
+                            end tell
+                            """
+                            let task = Process()
+                            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                            task.arguments = ["-e", script]
+                            try? task.run()
+                        } else {
+                            let alert = NSAlert()
+                            alert.messageText = "VM not running"
+                            alert.informativeText = "Start the VM first to open a terminal session."
+                            alert.alertStyle = .warning
+                            alert.runModal()
+                        }
+                    } label: {
+                        Label("Terminal", systemImage: "terminal")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(vmManager.state != .running)
+
                     // Reset VM button
                     Button {
                         showResetAlert = true

@@ -99,6 +99,27 @@ struct SettingsView: View {
                     Button("Open VM Storage in Finder") {
                         NSWorkspace.shared.open(VMConfig.appSupportDir)
                     }
+
+                    Button("Terminal") {
+                        if let ip = vmManager.vmIPAddress {
+                            let script = """
+                            tell application "Terminal"
+                                do script "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null tigris@\(ip)"
+                                activate
+                            end tell
+                            """
+                            let task = Process()
+                            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                            task.arguments = ["-e", script]
+                            try? task.run()
+                        } else {
+                            let alert = NSAlert()
+                            alert.messageText = "VM not running"
+                            alert.informativeText = "Start the VM first to open a terminal session."
+                            alert.alertStyle = .warning
+                            alert.runModal()
+                        }
+                    }
                 }
             }
             .formStyle(.grouped)

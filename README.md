@@ -223,13 +223,21 @@ Click **Test Connection** in Settings. If it succeeds, you're ready to chat.
 
 ## Sandbox Terminal
 
-TigrimOS includes a built-in terminal (**Settings → Terminal**) that gives you root access to the Ubuntu sandbox. It runs a real PTY with full color, tab completion, and cursor support via xterm.js.
+TigrimOS includes a built-in terminal that gives you root access to the Ubuntu sandbox. It runs a real PTY with full color, tab completion, and cursor support via xterm.js.
+
+### How to Open the Terminal
+
+| Platform | How |
+|----------|-----|
+| **Web UI** (macOS & Windows) | Click **Terminal** in the sidebar navigation |
+| **macOS native app** | Click the **Terminal** button in the top toolbar (available when VM is running) — opens macOS Terminal.app with SSH into the VM. Password: `tigris` |
+| **Windows** | Double-click **`TigrimOSTerminal.bat`** — opens a command prompt directly into the WSL2 Ubuntu sandbox (no password needed) |
 
 Use the terminal to install additional tools, manage services, or debug the sandbox environment.
 
 ### First-Time Setup: Claude Code CLI
 
-1. Go to **Settings → Terminal → Open Terminal**
+1. Open the Terminal (sidebar → **Terminal**)
 2. Install and login:
    ```bash
    npm i -g @anthropic-ai/claude-code
@@ -245,7 +253,7 @@ Use the terminal to install additional tools, manage services, or debug the sand
 
 ### First-Time Setup: Codex CLI
 
-1. Go to **Settings → Terminal → Open Terminal**
+1. Open the Terminal (sidebar → **Terminal**)
 2. Install and login:
    ```bash
    npm i -g @openai/codex
@@ -484,6 +492,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 |--------|--------|
 | **Start** | Boot the Ubuntu VM and start TigrimOS |
 | **Stop** | Gracefully shut down the VM |
+| **Terminal** | Open macOS Terminal.app with SSH into the VM |
 | **Reset VM** | Wipe and re-provision from scratch |
 
 ### Windows
@@ -492,6 +501,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 |--------|--------|
 | **TigrimOSStart.bat** | Start the WSL2 server and open as a standalone app window |
 | **TigrimOSStop.bat** | Stop the TigrimOS server |
+| **TigrimOSTerminal.bat** | Open a terminal directly into the Ubuntu WSL2 sandbox |
 | **TigrimOSInstaller.bat** | Re-run installer (update or repair) |
 
 | In-App Feature | Description |
