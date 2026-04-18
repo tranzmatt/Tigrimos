@@ -1,17 +1,29 @@
 import React, { useState, useEffect, useRef } from "react";
 import * as Recharts from "recharts";
 
+// Global cache: once a component is fetched and compiled, never re-fetch
+const componentCache = new Map<string, React.ComponentType>();
+
 interface Props {
   src: string; // URL to the compiled .jsx.js file
 }
 
 export default function ReactComponentRenderer({ src }: Props) {
-  const [Component, setComponent] = useState<React.ComponentType | null>(null);
+  const [Component, setComponent] = useState<React.ComponentType | null>(
+    () => componentCache.get(src) || null
+  );
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
+
+    // Already cached — skip fetch entirely
+    if (componentCache.has(src)) {
+      setComponent(() => componentCache.get(src)!);
+      return;
+    }
+
     setError(null);
     setComponent(null);
 
@@ -31,6 +43,7 @@ export default function ReactComponentRenderer({ src }: Props) {
         const Comp = factory(React, Recharts);
 
         if (Comp) {
+          componentCache.set(src, Comp);
           setComponent(() => Comp);
         } else {
           setError("No component returned from compiled code");

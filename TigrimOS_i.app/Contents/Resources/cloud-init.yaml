@@ -11,6 +11,14 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
 
+# Force apt to use IPv4 only (IPv6 is often unreachable inside VMs)
+bootcmd:
+  - echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+
+apt:
+  conf: |
+    Acquire::ForceIPv4 "true";
+
 package_update: true
 package_upgrade: true
 
@@ -21,10 +29,11 @@ packages:
   - python3
   - python3-pip
   - python3-venv
+  - net-tools
 
 runcmd:
   # Install Node.js 20
-  - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  - curl -4 -fsSL https://deb.nodesource.com/setup_20.x | bash -
   - apt-get install -y nodejs
 
   # Create Python virtual environment
@@ -49,6 +58,38 @@ runcmd:
   - cd /app && npm install --ignore-scripts --omit=dev 2>/dev/null || true
   - cd /app/client && npm install 2>/dev/null || true
   - cd /app/client && npx vite build 2>/dev/null || true
+  # Fix settings.json — replace dev-machine paths with VM paths
+  - |
+    if [ -f /app/data/settings.json ]; then
+      python3 -c "
+import json
+fp='/app/data/settings.json'
+with open(fp) as f: s=json.load(f)
+s['sandboxDir']='/app'
+s['pythonPath']='/opt/venv/bin/python3'
+with open(fp,'w') as f: json.dump(s,f,indent=2)
+" || true
+    else
+      mkdir -p /app/data
+      echo '{"sandboxDir":"/app","pythonPath":"/opt/venv/bin/python3","tigerBotApiKey":"","tigerBotModel":"TigerBot-70B-Chat","mcpTools":[],"webSearchEnabled":false}' > /app/data/settings.json
+    fi
+  # Fix projects.json — migrate old absolute paths to relative
+  - |
+    if [ -f /app/data/projects.json ]; then
+      python3 -c "
+import json, os
+fp='/app/data/projects.json'
+with open(fp) as f: projects=json.load(f)
+changed=False
+for p in projects:
+    wf=p.get('workingFolder','')
+    if wf and os.path.isabs(wf) and not wf.startswith('/app'):
+        p['workingFolder']=os.path.basename(wf)
+        changed=True
+if changed:
+    with open(fp,'w') as f: json.dump(projects,f,indent=2)
+" || true
+    fi
 
   # Create systemd service for TigrimOS
   - |

@@ -475,16 +475,9 @@ class VMManager: NSObject, ObservableObject {
 
         ssh_pwauth: true
 
-        package_update: true
-
-        packages:
-          - curl
-          - git
-          - build-essential
-          - python3
-          - python3-pip
-          - python3-venv
-          - net-tools
+        # Force apt to use IPv4 only (IPv6 is often unreachable inside VMs)
+        bootcmd:
+          - echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 
         write_files:
           - path: /opt/setup-host-gateway.sh
@@ -520,16 +513,53 @@ class VMManager: NSObject, ObservableObject {
               set -e
               export DEBIAN_FRONTEND=noninteractive
 
+              # Force IPv4 for apt (IPv6 often unreachable in VMs)
+              echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+
+              # Retry helper
+              retry() {
+                local n=$1; shift; local d=$1; shift; local i=1
+                while true; do
+                  "$@" && break || {
+                    [ $i -ge $n ] && echo "[WARN] Failed after $n attempts: $*" && return 1
+                    echo "[RETRY $i/$n] retrying in ${d}s..."; sleep "$d"; ((i++))
+                  }
+                done
+              }
+
+              # Wait for network — use wget (always available on Ubuntu cloud images)
+              echo "[TigrimOS] Waiting for network..."
+              for i in $(seq 1 15); do
+                if wget -q --spider --timeout=5 http://ports.ubuntu.com 2>/dev/null || \
+                   ping -c1 -W3 192.168.64.1 >/dev/null 2>&1; then
+                  echo "[TigrimOS] Network OK"
+                  break
+                fi
+                echo "[TigrimOS] Network not ready, waiting... ($i/15)"
+                sleep 3
+              done
+
+              # Enable universe repo (needed for python3-pip, python3-venv)
+              echo "[TigrimOS] Enabling universe repository..."
+              apt-get install -y software-properties-common 2>/dev/null || true
+              add-apt-repository -y universe 2>/dev/null || \
+                sed -i 's/^deb \\(.*\\) jammy main$/deb \\1 jammy main universe/' /etc/apt/sources.list
+
+              # Install base packages (moved from cloud-init packages: for retry support)
+              echo "[TigrimOS] Installing base packages..."
+              retry 5 15 apt-get update -qq
+              retry 3 10 apt-get install -y curl git build-essential python3 python3-pip python3-venv net-tools
+
               echo "[TigrimOS] Installing Node.js 20..."
-              curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-              apt-get install -y nodejs
+              retry 3 5 bash -c 'curl -4 -fsSL https://deb.nodesource.com/setup_20.x | bash -'
+              retry 3 5 apt-get install -y nodejs
 
               echo "[TigrimOS] Setting up Python venv..."
               python3 -m venv /opt/venv
-              /opt/venv/bin/pip install --no-cache-dir numpy pillow matplotlib pandas scipy seaborn openpyxl python-docx
+              retry 3 10 /opt/venv/bin/pip install --no-cache-dir numpy pillow matplotlib pandas scipy seaborn openpyxl python-docx
 
               echo "[TigrimOS] Installing npm packages..."
-              npm i -g clawhub tsx
+              retry 3 10 npm i -g clawhub tsx
 
               echo "[TigrimOS] Setting up TigrimOS..."
               mkdir -p /app
@@ -541,7 +571,7 @@ class VMManager: NSObject, ObservableObject {
               else
                 echo "[TigrimOS] Local source not found, cloning from GitHub..."
                 apt-get install -y -qq git 2>/dev/null || true
-                git clone --depth 1 https://github.com/Sompote/TigrimOS.git /tmp/tigris-src
+                retry 3 5 git clone --depth 1 https://github.com/Sompote/TigrimOS.git /tmp/tigris-src
                 cp -r /tmp/tigris-src/tiger_cowork/* /app/
                 rm -rf /tmp/tigris-src
               fi

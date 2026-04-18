@@ -8,6 +8,19 @@ import { busSubscribe, busPublish, busWaitForMessage } from "./protocols";
 import path from "path";
 import { execSync } from "child_process";
 import fs from "fs";
+import yaml from "js-yaml";
+
+// Resolve sandboxDir with fallback — must stay in sync with SANDBOX_DIR in index.ts
+function resolveSandboxDir(configured?: string): string {
+  if (configured && fs.existsSync(configured)) return configured;
+  const envDir = process.env.SANDBOX_DIR;
+  if (envDir && fs.existsSync(envDir)) return envDir;
+  const cwd = process.cwd();
+  if (fs.existsSync(cwd)) return cwd;
+  const tmp = path.join(process.env.TMPDIR || "/tmp", "tigrimos_sandbox");
+  fs.mkdirSync(tmp, { recursive: true });
+  return tmp;
+}
 
 // ─── Scan output_file/ for newly created files ───
 const OUTPUT_EXTS = [".pdf", ".docx", ".doc", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".svg", ".html", ".gif", ".webp", ".txt", ".md"];
@@ -152,14 +165,12 @@ export async function buildSystemPrompt(filterSkillIds?: string[], options?: { i
           const content = fs.readFileSync(skillMdPath, "utf8");
           const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
           if (fmMatch) {
-            for (const line of fmMatch[1].split("\n")) {
-              const idx = line.indexOf(":");
-              if (idx > 0) {
-                const key = line.slice(0, idx).trim().toLowerCase();
-                const val = line.slice(idx + 1).trim();
-                if (key === "description") desc = val;
+            try {
+              const parsed = yaml.load(fmMatch[1]) as any;
+              if (parsed && typeof parsed === "object" && typeof parsed.description === "string") {
+                desc = parsed.description.replace(/\s+/g, " ").trim();
               }
-            }
+            } catch {}
           }
         }
         // List supporting files in the skill folder
@@ -188,13 +199,16 @@ export async function buildSystemPrompt(filterSkillIds?: string[], options?: { i
 
   // If project has specific skill selections, filter to only those
   if (filterSkillIds && filterSkillIds.length > 0) {
-    clawhubSkills = clawhubSkills.filter((name) => filterSkillIds.includes(name));
-    customSkills = customSkills.filter((cs) => filterSkillIds.includes(cs.name));
+    // Resolve skill IDs (UUIDs) to skill names for matching against filesystem-discovered skills
     const allSkills = await getSkills();
-    const selectedSkillNames = allSkills.filter((s) => filterSkillIds.includes(s.id)).map((s) => s.name);
+    const selectedSkillNames = new Set(
+      allSkills.filter((s) => filterSkillIds.includes(s.id)).map((s) => s.name)
+    );
+    clawhubSkills = clawhubSkills.filter((name) => selectedSkillNames.has(name) || filterSkillIds.includes(name));
+    customSkills = customSkills.filter((cs) => selectedSkillNames.has(cs.name) || filterSkillIds.includes(cs.name));
     registeredSkills = registeredSkills.filter((rs) => {
       const name = rs.split(" (")[0];
-      return selectedSkillNames.includes(name) || filterSkillIds.includes(name);
+      return selectedSkillNames.has(name) || filterSkillIds.includes(name);
     });
   }
 
@@ -216,7 +230,7 @@ export async function buildSystemPrompt(filterSkillIds?: string[], options?: { i
     skillsList += `\n\nOther registered skills: ${registeredSkills.join(", ")}`;
   }
   if (skillsList) {
-    skillsList += `\n\nSkill usage workflow: 1) call load_skill("<name>") to read SKILL.md and see supporting files, 2) if the skill has supporting .py files, use read_file to load them, 3) use run_python or run_shell to execute following the skill instructions.`;
+    skillsList += `\n\nSkill usage workflow: 1) call load_skill("<name>") to read SKILL.md and see supporting files, 2) if the skill has supporting .py/.sh script files listed, use read_file to load them then execute via run_python/run_shell, 3) if the skill has NO supporting script files (only SKILL.md), you MUST implement the logic INLINE in run_python following the SKILL.md instructions — do NOT try to import from non-existent script paths. 4) CRITICAL: if run_python returns empty output, the execution FAILED — report the error to the user, do NOT fabricate results.`;
   }
 
   const settings = await getSettings();
@@ -550,7 +564,7 @@ export function setupSocket(io: Server): void {
     if (data.status === "human_node_message" && data.sessionId) {
       const humanMsgFiles: string[] = data.outputFiles || [];
       getSettings().then(async (msgSettings) => {
-        const msgSandboxDir = msgSettings.sandboxDir || path.resolve("sandbox");
+        const msgSandboxDir = resolveSandboxDir(msgSettings.sandboxDir);
         const scannedMsgFiles = scanOutputFiles(msgSandboxDir, Date.now() - 120000);
         for (const sf of scannedMsgFiles) {
           if (!humanMsgFiles.includes(sf)) humanMsgFiles.push(sf);
@@ -722,7 +736,7 @@ export function setupSocket(io: Server): void {
 
           // Scan for output files generated during agent execution
           const agentSettings = await getSettings();
-          const agentSandboxDir = agentSettings.sandboxDir || path.resolve("sandbox");
+          const agentSandboxDir = resolveSandboxDir(agentSettings.sandboxDir);
           const agentOutputFiles = scanOutputFiles(agentSandboxDir, agentStartTime);
 
           session.messages.push({ role: "assistant", content: responseContent, timestamp: new Date().toISOString(), files: agentOutputFiles.length > 0 ? agentOutputFiles : undefined });
@@ -779,7 +793,7 @@ export function setupSocket(io: Server): void {
 
           // Scan for output files generated during agent execution
           const bcSettings = await getSettings();
-          const bcSandboxDir = bcSettings.sandboxDir || path.resolve("sandbox");
+          const bcSandboxDir = resolveSandboxDir(bcSettings.sandboxDir);
           const bcOutputFiles = scanOutputFiles(bcSandboxDir, broadcastStartTime);
 
           session.messages.push({ role: "assistant", content: fullResponse, timestamp: new Date().toISOString(), files: bcOutputFiles.length > 0 ? bcOutputFiles : undefined });
@@ -794,7 +808,7 @@ export function setupSocket(io: Server): void {
       const pythonMatch = message.match(/```python\n([\s\S]*?)```/);
       if (pythonMatch) {
         const settings = await getSettings();
-        const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
+        const sandboxDir = resolveSandboxDir(settings.sandboxDir);
         broadcastStatus({ sessionId, status: "running_python" });
         const result = await runPython(pythonMatch[1], sandboxDir);
         const resultMsg = [
@@ -817,7 +831,7 @@ export function setupSocket(io: Server): void {
 
       // Use tool-calling AI loop — build multimodal content for images
       const settings = await getSettings();
-      const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
+      const sandboxDir = resolveSandboxDir(settings.sandboxDir);
       let rawChatMessages = session.messages.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
@@ -871,7 +885,8 @@ export function setupSocket(io: Server): void {
               console.log(`[Image] ${img.path} is ${(imgBuffer.length / 1024 / 1024).toFixed(1)}MB, compressing...`);
               try {
                 const tmpOut = `/tmp/cowork_resized_${Date.now()}.jpg`;
-                execSync(`python3 -c "
+                const pyBin = settings.pythonPath || "python3";
+                execSync(`${pyBin} -c "
 from PIL import Image
 import sys
 img = Image.open('${imgPath.replace(/'/g, "\\'")}')
@@ -1048,7 +1063,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
               }
 
               // Scan sandbox for output files
-              const jobSandboxDir = rtSettings.sandboxDir || path.resolve("sandbox");
+              const jobSandboxDir = resolveSandboxDir(rtSettings.sandboxDir);
               const scannedFiles = scanOutputFiles(jobSandboxDir, activeTask.startedAt ? new Date(activeTask.startedAt).getTime() : Date.now() - 60000);
               for (const sf of scannedFiles) {
                 if (!outputFiles.includes(sf)) outputFiles.push(sf);
@@ -1179,7 +1194,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
         );
 
         // Scan sandbox for any new output files generated during this job
-        const jobSandboxDir = settings.sandboxDir || path.resolve("sandbox");
+        const jobSandboxDir = resolveSandboxDir(rtSettings.sandboxDir);
         const scannedFiles = scanOutputFiles(jobSandboxDir, activeTask.startedAt ? new Date(activeTask.startedAt).getTime() : Date.now() - 60000);
         for (const sf of scannedFiles) {
           if (!outputFiles.includes(sf)) outputFiles.push(sf);
@@ -1398,10 +1413,17 @@ img.save('${tmpOut}', 'JPEG', quality=80)
       const runProjectChat = async () => {
       const settings_proj = await getSettings();
       console.log(`[ProjectChat] sessionId=${sessionId} project="${project.name}" hasOverride=${hasOverrides} effectiveMode=${settings_proj.subAgentMode} configFile=${settings_proj.subAgentConfigFile}`);
-      const sandboxDir_proj = settings_proj.sandboxDir || path.resolve("sandbox");
-      const resolvedWorkingFolder = project.workingFolder
+      const sandboxDir_proj = resolveSandboxDir(settings_proj.sandboxDir);
+      let resolvedWorkingFolder = project.workingFolder
         ? (path.isAbsolute(project.workingFolder) ? project.workingFolder : path.join(sandboxDir_proj, project.workingFolder))
         : "";
+      // If absolute working folder doesn't exist (e.g. /root/cowork/ from old setup),
+      // fall back to sandbox-relative using the folder's basename
+      if (resolvedWorkingFolder && !fs.existsSync(resolvedWorkingFolder)) {
+        const fallback = path.join(sandboxDir_proj, path.basename(resolvedWorkingFolder));
+        try { fs.mkdirSync(fallback, { recursive: true }); } catch {}
+        resolvedWorkingFolder = fallback;
+      }
 
       // Build project-aware system prompt (filter skills to only project-selected ones)
       // Determine if realtime agents will be active for this project chat
@@ -1561,7 +1583,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
 
           // Scan for output files generated during agent execution
           const projAgentSettings = await getSettings();
-          const projAgentSandboxDir = projAgentSettings.sandboxDir || path.resolve("sandbox");
+          const projAgentSandboxDir = resolveSandboxDir(projAgentSettings.sandboxDir);
           const projAgentOutputFiles = scanOutputFiles(projAgentSandboxDir, projAgentStartTime);
 
           session.messages.push({ role: "assistant", content: responseContent, timestamp: new Date().toISOString(), files: projAgentOutputFiles.length > 0 ? projAgentOutputFiles : undefined });
@@ -1611,7 +1633,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
 
           // Scan for output files generated during agent execution
           const projBcSettings = await getSettings();
-          const projBcSandboxDir = projBcSettings.sandboxDir || path.resolve("sandbox");
+          const projBcSandboxDir = resolveSandboxDir(projBcSettings.sandboxDir);
           const projBcOutputFiles = scanOutputFiles(projBcSandboxDir, projBcStartTime);
 
           session.messages.push({ role: "assistant", content: fullResponse, timestamp: new Date().toISOString(), files: projBcOutputFiles.length > 0 ? projBcOutputFiles : undefined });
@@ -1670,7 +1692,8 @@ img.save('${tmpOut}', 'JPEG', quality=80)
             if (imgBuffer.length > MAX_SIZE) {
               try {
                 const tmpOut = `/tmp/cowork_resized_${Date.now()}.jpg`;
-                execSync(`python3 -c "
+                const pyBin = settings.pythonPath || "python3";
+                execSync(`${pyBin} -c "
 from PIL import Image
 img = Image.open('${imgPath.replace(/'/g, "\\'")}')
 img.thumbnail((1600, 1600), Image.LANCZOS)
@@ -1831,7 +1854,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
                 }
               }
 
-              const projJobSandboxDir = rtSettings.sandboxDir || path.resolve("sandbox");
+              const projJobSandboxDir = resolveSandboxDir(rtSettings.sandboxDir);
               const scannedFiles = scanOutputFiles(projJobSandboxDir, activeTask.startedAt ? new Date(activeTask.startedAt).getTime() : Date.now() - 60000);
               for (const sf of scannedFiles) {
                 if (!outputFiles.includes(sf)) outputFiles.push(sf);
@@ -1952,7 +1975,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
         );
 
         // Scan sandbox for any new output files generated during this job
-        const projJobSandboxDir = settings.sandboxDir || path.resolve("sandbox");
+        const projJobSandboxDir = resolveSandboxDir(rtSettings.sandboxDir);
         const projScannedFiles = scanOutputFiles(projJobSandboxDir, activeTask.startedAt ? new Date(activeTask.startedAt).getTime() : Date.now() - 60000);
         for (const sf of projScannedFiles) {
           if (!outputFiles.includes(sf)) outputFiles.push(sf);
@@ -2113,7 +2136,7 @@ img.save('${tmpOut}', 'JPEG', quality=80)
 
     socket.on("python:run", async (data: { code: string }) => {
       const settings = await getSettings();
-      const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
+      const sandboxDir = resolveSandboxDir(settings.sandboxDir);
       socket.emit("python:status", { status: "running" });
       const result = await runPython(data.code, sandboxDir);
       socket.emit("python:result", result);

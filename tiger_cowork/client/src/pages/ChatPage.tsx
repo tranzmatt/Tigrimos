@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -120,7 +120,7 @@ function MarkdownPreview({ file }: { file: string }) {
   );
 }
 
-function OutputCanvas({ files }: { files: string[] }) {
+const OutputCanvas = React.memo(function OutputCanvas({ files }: { files: string[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const images = files.filter((f) => ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(getFileExt(f)));
@@ -140,7 +140,7 @@ function OutputCanvas({ files }: { files: string[] }) {
           {images.map((f) => (
             <div key={f} className="canvas-image-wrap">
               <img
-                src={sandboxUrl(f, true)}
+                src={sandboxUrl(f)}
                 alt={f}
                 className={`canvas-image ${expanded === f ? "expanded" : ""}`}
                 onClick={() => setExpanded(expanded === f ? null : f)}
@@ -166,7 +166,7 @@ function OutputCanvas({ files }: { files: string[] }) {
             </a>
           </div>
           <div className="canvas-react-body">
-            <ReactComponentRenderer src={sandboxUrl(f, true)} />
+            <ReactComponentRenderer src={sandboxUrl(f)} />
           </div>
         </div>
       ))}
@@ -185,7 +185,7 @@ function OutputCanvas({ files }: { files: string[] }) {
               </a>
             </div>
           </div>
-          <iframe src={sandboxUrl(f, true)} className="canvas-html-iframe" title={f} />
+          <iframe src={sandboxUrl(f)} className="canvas-html-iframe" title={f} />
         </div>
       ))}
 
@@ -269,7 +269,7 @@ function OutputCanvas({ files }: { files: string[] }) {
       )}
     </div>
   );
-}
+}, (prev, next) => prev.files.length === next.files.length && prev.files.every((f, i) => f === next.files[i]));
 
 export default function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -302,13 +302,16 @@ export default function ChatPage() {
   const [agentEditorFilename, setAgentEditorFilename] = useState<string | undefined>();
   const { connected, sendMessage, onChunk, onResponse, onStatus, socket: socketRef } = useSocket();
 
-  // Collect all output files from messages for the right panel
-  const allOutputFiles = messages.reduce<{ files: string[]; msgIndex: number }[]>((acc, msg, i) => {
-    if (msg.files && msg.files.length > 0) {
-      acc.push({ files: msg.files, msgIndex: i });
-    }
-    return acc;
-  }, []);
+  // Collect all output files from messages for the right panel (memoized to avoid re-renders)
+  const allOutputFiles = useMemo(() =>
+    messages.reduce<{ files: string[]; msgIndex: number }[]>((acc, msg, i) => {
+      if (msg.files && msg.files.length > 0) {
+        acc.push({ files: msg.files, msgIndex: i });
+      }
+      return acc;
+    }, []),
+    [messages]
+  );
 
   useEffect(() => {
     api.getSessions().then((s: Session[]) => {
@@ -382,7 +385,11 @@ export default function ChatPage() {
         // Track running tasks by ID for this session
         const sessionTasks = tasks.filter((t: any) => t.sessionId === activeSession);
         const sessionTaskIds = new Set(sessionTasks.map((t: any) => t.id as string));
-        setRunningTaskIds(sessionTaskIds);
+        // Only update if the set of task IDs actually changed to avoid unnecessary re-renders
+        setRunningTaskIds((prev) => {
+          if (prev.size === sessionTaskIds.size && [...prev].every((id) => sessionTaskIds.has(id))) return prev;
+          return sessionTaskIds;
+        });
         const activeTask = sessionTasks[sessionTasks.length - 1]; // show status of most recent task
         if (activeTask) {
           wasLoadingRef.current = true;
@@ -1067,7 +1074,7 @@ export default function ChatPage() {
           </div>
           <div className="output-panel-content">
             {allOutputFiles.map((group, gi) => (
-              <OutputCanvas key={`${gi}-${outputRefreshKey}`} files={group.files} />
+              <OutputCanvas key={`${gi}-${group.files.join(",")}`} files={group.files} />
             ))}
           </div>
         </div>

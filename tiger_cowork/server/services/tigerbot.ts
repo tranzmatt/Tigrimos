@@ -1,8 +1,20 @@
 import { getSettings, getCheckpointDir } from "./data";
 import { getTools, callTool, getWorkingAgents, collectPendingResults, getPendingBlackboardTasks, isClaudeCodeModel, runClaudeCodeAgent, isCodexModel, runCodexAgent, isLocalCliAgent, extractCliSubModel } from "./toolbox";
 import fs from "fs/promises";
+import fsSync from "fs";
 import path from "path";
 import crypto from "crypto";
+
+function resolveSandboxDir(configured?: string): string {
+  if (configured && fsSync.existsSync(configured)) return configured;
+  const envDir = process.env.SANDBOX_DIR;
+  if (envDir && fsSync.existsSync(envDir)) return envDir;
+  const cwd = process.cwd();
+  if (fsSync.existsSync(cwd)) return cwd;
+  const tmp = path.join(process.env.TMPDIR || "/tmp", "tigrimos_sandbox");
+  fsSync.mkdirSync(tmp, { recursive: true });
+  return tmp;
+}
 
 interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
@@ -1165,7 +1177,7 @@ export async function callTigerBotWithTools(
     const task = typeof userMsg?.content === "string" ? userMsg.content : "(no task)";
     const subModel = extractCliSubModel(modelOverride);
     const result = await runAgent(task, {
-      workingDir: settings.sandboxDir || process.cwd(),
+      workingDir: resolveSandboxDir(settings.sandboxDir),
       systemPrompt,
       signal,
       timeout: (settings.subAgentTimeout || 120) * 1000,

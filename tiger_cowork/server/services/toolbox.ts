@@ -21,6 +21,21 @@ import {
 
 const execAsync = promisify(exec);
 
+// Resolve sandboxDir with fallback — settings.json may contain a dev-machine path
+// that doesn't exist inside the deployed VM.
+// Priority: configured (if exists) → SANDBOX_DIR env → cwd → /tmp
+function resolveSandboxDir(configured?: string): string {
+  if (configured && fs.existsSync(configured)) return configured;
+  // Use the same env var as index.ts so static file serving and tool output stay in sync
+  const envDir = process.env.SANDBOX_DIR;
+  if (envDir && fs.existsSync(envDir)) return envDir;
+  const cwd = process.cwd();
+  if (fs.existsSync(cwd)) return cwd;
+  const tmp = path.join(process.env.TMPDIR || "/tmp", "tigrimos_sandbox");
+  fs.mkdirSync(tmp, { recursive: true });
+  return tmp;
+}
+
 // --- Tool definitions (OpenAI function-calling format) ---
 
 const builtinTools = [
@@ -795,7 +810,8 @@ async function webSearch(args: { query: string }): Promise<any> {
     ].join("\n");
     const tmpFile = `/tmp/ddg_search_${Date.now()}.py`;
     fs.writeFileSync(tmpFile, pyScript);
-    const { stdout } = await execAsync(`python3 ${tmpFile}`, { timeout: 30000 });
+    const pyBin = settings.pythonPath || "python3";
+    const { stdout } = await execAsync(`${pyBin} ${tmpFile}`, { timeout: 30000 });
     try { fs.unlinkSync(tmpFile); } catch {}
     const ddgResults = JSON.parse(stdout.trim());
     for (const r of ddgResults) {
@@ -890,7 +906,7 @@ async function fetchUrl(args: { url: string; method?: string }): Promise<any> {
 
 async function runPythonTool(args: { code: string }, _retryCount: number = 0): Promise<any> {
   const settings = await getSettings();
-  const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
+  const sandboxDir = resolveSandboxDir(settings.sandboxDir);
   const timeout = settings.pythonTimeout || 300000; // 5 minutes default
   const result = await runPython(args.code, sandboxDir, timeout, getCurrentProjectWorkingFolder());
 
@@ -982,11 +998,12 @@ async function runPythonTool(args: { code: string }, _retryCount: number = 0): P
       errorHint = "\n💡 HINT: Operation timed out. Try with smaller data or add timeout handling.";
     }
 
+    const errMsg = `Python execution failed: ${lastErrorLine}`;
     return {
       exitCode: result.exitCode,
       ok: false,
-      error: `Python execution failed: ${lastErrorLine}`,
-      stdout: result.stdout.slice(0, 20000),
+      error: errMsg,
+      stdout: result.stdout.trim() ? result.stdout.slice(0, 20000) : `❌ ${errMsg}${errorHint}`,
       stderr: stderr + errorHint,
       outputFiles: result.outputFiles,
     };
@@ -1010,9 +1027,24 @@ async function runPythonTool(args: { code: string }, _retryCount: number = 0): P
     }
   }
 
+  // Detect silent failures: exitCode 0 but no stdout AND no output files
+  // This usually means the process crashed during import (e.g. HOME not writable)
+  // before any print() could flush. Surface stderr so the LLM can diagnose.
+  if (!result.stdout.trim() && result.outputFiles.length === 0 && stderr0.trim()) {
+    warningHint += `\n⚠️ WARNING: Python exited successfully but produced no output. stderr: ${stderr0.slice(0, 2000)}`;
+  } else if (!result.stdout.trim() && result.outputFiles.length === 0 && !stderr0.trim()) {
+    warningHint += `\n⚠️ WARNING: Python produced no output and no errors. The script may have crashed silently (e.g. sandbox write permission issue). Try adding print() statements or wrapping the main logic in try/except to surface errors.`;
+  }
+
+  // If stdout is empty, promote warnings/errors to stdout so the LLM cannot miss them
+  let finalStdout = result.stdout.slice(0, 20000);
+  if (!finalStdout.trim() && warningHint) {
+    finalStdout = warningHint.trim();
+  }
+
   return {
     exitCode: result.exitCode,
-    stdout: result.stdout.slice(0, 20000),
+    stdout: finalStdout,
     stderr: stderr0 + warningHint,
     warnings: warningHint ? warningHint.trim() : undefined,
     outputFiles: result.outputFiles,
@@ -1021,7 +1053,7 @@ async function runPythonTool(args: { code: string }, _retryCount: number = 0): P
 
 async function runReactTool(args: { code: string; title?: string; dependencies?: string[] }): Promise<any> {
   const settings = await getSettings();
-  const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
+  const sandboxDir = resolveSandboxDir(settings.sandboxDir);
   const outputDir = getCurrentProjectWorkingFolder() || path.join(sandboxDir, "output_file");
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
@@ -1102,7 +1134,7 @@ async function runShell(args: { command?: string; cmd?: string; cwd?: string }):
   const command = args.command || args.cmd;
   if (!command) return { ok: false, error: "No command provided" };
   const settings = await getSettings();
-  const cwd = args.cwd || settings.sandboxDir || process.cwd();
+  const cwd = args.cwd && fs.existsSync(args.cwd) ? args.cwd : resolveSandboxDir(settings.sandboxDir);
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd,
@@ -1126,8 +1158,9 @@ function readFileTool(args: { path?: string; file?: string; filepath?: string })
 
 async function writeFileTool(args: { path: string; content: string; append?: boolean }): Promise<any> {
   const settings = await getSettings();
-  const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
+  const sandboxDir = resolveSandboxDir(settings.sandboxDir);
   const outputDir = getCurrentProjectWorkingFolder() || path.join(sandboxDir, "output_file");
+  fs.mkdirSync(outputDir, { recursive: true });
   const target = path.resolve(outputDir, args.path);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   if (args.append) {
@@ -1145,7 +1178,7 @@ async function writeFileTool(args: { path: string; content: string; append?: boo
 
 async function listFilesTool(args: { path?: string; recursive?: boolean }): Promise<any> {
   const settings = await getSettings();
-  const target = path.resolve(args.path || settings.sandboxDir || ".");
+  const target = path.resolve(args.path || resolveSandboxDir(settings.sandboxDir));
   if (!fs.existsSync(target)) return { ok: false, error: "Directory not found" };
   const items: { path: string; type: string }[] = [];
   const limit = 200;
@@ -1491,7 +1524,7 @@ export async function runClaudeCodeAgent(
   } = {},
 ): Promise<{ content: string; toolResults?: any[]; toolCalls?: string[] }> {
   const settings = await getSettings();
-  const workDir = opts.workingDir || getCurrentProjectWorkingFolder() || settings.sandboxDir || process.cwd();
+  const workDir = opts.workingDir || getCurrentProjectWorkingFolder() || resolveSandboxDir(settings.sandboxDir);
   const timeout = opts.timeout || 300_000; // 5 min default
   const maxTurns = opts.maxTurns || 25;
 
@@ -1674,7 +1707,7 @@ export async function runCodexAgent(
   } = {},
 ): Promise<{ content: string; toolResults?: any[]; toolCalls?: string[] }> {
   const settings = await getSettings();
-  const workDir = opts.workingDir || getCurrentProjectWorkingFolder() || settings.sandboxDir || process.cwd();
+  const workDir = opts.workingDir || getCurrentProjectWorkingFolder() || resolveSandboxDir(settings.sandboxDir);
   const timeout = opts.timeout || 300_000;
 
   // Build the prompt
@@ -2287,7 +2320,7 @@ You are sub-agent "${label}" at depth ${currentDepth + 1}/${maxDepth}.`;
       const cliSubModel = extractCliSubModel(agentModel);
       console.log(`[SubAgent:${label}] Using ${cliName} CLI as agent backend${cliSubModel ? ` (model: ${cliSubModel})` : ""}`);
       return await runAgent(args.task, {
-        workingDir: getCurrentProjectWorkingFolder() || settings.sandboxDir,
+        workingDir: getCurrentProjectWorkingFolder() || resolveSandboxDir(settings.sandboxDir),
         systemPrompt: subPrompt,
         signal: combinedSignal,
         timeout,
@@ -3044,7 +3077,7 @@ YOUR ONLY JOB RIGHT NOW IS TO BID — NOT TO EXECUTE THE TASK.
         const rtCliSubModel = extractCliSubModel(realtimeAgentModel);
         console.log(`[Realtime:${agentDef.name}] Using ${cliName} CLI as agent backend${rtCliSubModel ? ` (model: ${rtCliSubModel})` : ""}`);
         return await runAgent(msg.payload.task, {
-          workingDir: getCurrentProjectWorkingFolder() || settings.sandboxDir,
+          workingDir: getCurrentProjectWorkingFolder() || resolveSandboxDir(settings.sandboxDir),
           systemPrompt: taskPrompt,
           signal,
           timeout: (settings.subAgentTimeout || 120) * 1000,

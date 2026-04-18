@@ -49,7 +49,8 @@ export async function toolsRoutes(fastify: FastifyInstance) {
         ].join("\n");
         const tmpFile = `/tmp/ddg_search_${Date.now()}.py`;
         fs.writeFileSync(tmpFile, pyScript);
-        const { stdout } = await execAsync(`python3 ${tmpFile}`, { timeout: 30000 });
+        const pyBin = settings.pythonPath || "python3";
+        const { stdout } = await execAsync(`${pyBin} ${tmpFile}`, { timeout: 30000 });
         try { fs.unlinkSync(tmpFile); } catch {}
         const ddgResults = JSON.parse(stdout.trim());
         results = ddgResults.map((r: any) => ({

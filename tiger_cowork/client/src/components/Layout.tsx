@@ -9,7 +9,6 @@ const NAV_ITEMS = [
   { path: "/files", label: "Files", icon: "folder" },
   { path: "/tasks", label: "Tasks", icon: "schedule" },
   { path: "/skills", label: "Skills", icon: "extension" },
-  { path: "/terminal", label: "Terminal", icon: "terminal" },
   { path: "/settings", label: "Settings", icon: "settings" },
 ];
 

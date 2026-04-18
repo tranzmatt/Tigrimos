@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
 import fs from "fs";
+import yaml from "js-yaml";
 
 const execFileAsync = promisify(execFile);
 const TIGER_BOT_DIR = path.resolve("Tiger_bot");
@@ -116,12 +117,9 @@ export function listInstalledSkills() {
           const content = fs.readFileSync(skillFile, "utf-8");
           const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
           if (fmMatch) {
-            for (const line of fmMatch[1].split("\n")) {
-              const idx = line.indexOf(":");
-              if (idx > 0 && line.slice(0, idx).trim() === "description") {
-                description = line.slice(idx + 1).trim();
-                break;
-              }
+            const parsed = yaml.load(fmMatch[1]) as any;
+            if (parsed && typeof parsed === "object" && typeof parsed.description === "string") {
+              description = parsed.description.replace(/\s+/g, " ").trim();
             }
           }
         } catch {}

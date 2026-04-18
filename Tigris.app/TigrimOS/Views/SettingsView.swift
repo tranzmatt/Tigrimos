@@ -179,7 +179,7 @@ struct SettingsView: View {
                 Text("TigrimOS")
                     .font(.largeTitle.bold())
 
-                Text("v1.1.1")
+                Text("v1.3.1")
                     .foregroundColor(.secondary)
 
                 Text("AI Agent Workspace with Remote Agents")
@@ -189,7 +189,7 @@ struct SettingsView: View {
                     .frame(width: 200)
 
                 VStack(spacing: 8) {
-                    Text("TigrimOS v1.1.1")
+                    Text("TigrimOS v1.3.1")
                     Text("Ubuntu 22.04 VM via Virtualization.framework")
                     Text("Node.js 20 + Python 3 + Fastify")
                 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.1 (2026-04-18)
+**Fix Custom Skill Python Execution, Output Panel Stability, VM Settings Persistence**
+
+- **Fix custom skill Python execution** — skills with supporting Python scripts now execute correctly in the VM; fixed `sandboxDir` and `pythonPath` resolution so `run_python` no longer returns empty results when called from skill workflows
+- **Fix output panel constant reloading** — React charts, images, and iframes in the output panel no longer re-render every 2-3 seconds; stabilized with `React.memo` deep comparison, global component cache, and removed URL cache-busting
+- **Fix agent empty tool results** — when `run_python` returns empty stdout, errors and warnings from stderr are now promoted to stdout so the agent sees failures instead of fabricating answers
+- **Python error visibility** — user code is wrapped in try/except so uncaught exceptions always appear in stdout with full traceback
+- **VM settings persistence** — `sandboxDir` and `pythonPath` in `settings.json` are now auto-corrected before every service start via systemd `ExecStartPre`, surviving VM restarts
+- **Project path migration** — old absolute paths in `projects.json` (e.g. `/root/cowork/...`) are automatically migrated to relative paths during VM provisioning
+- **Terminal lands in /app** — VM terminal now opens in the application directory instead of `/root`
+
 ## v1.3.0 (2026-04-15)
 **Live Agent Diagram, Async Parallel Sub-Agents, New P2P Algorithm, Terminal Access**
 

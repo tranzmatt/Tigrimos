@@ -7,19 +7,45 @@ import path from "path";
 import multipart from "@fastify/multipart";
 import { createReadStream } from "fs";
 
-// Helper to resolve project working folder (handles relative paths)
+function resolveSandboxDir(configured?: string): string {
+  if (configured && fs.existsSync(configured)) return configured;
+  const envDir = process.env.SANDBOX_DIR;
+  if (envDir && fs.existsSync(envDir)) return envDir;
+  const cwd = process.cwd();
+  if (fs.existsSync(cwd)) return cwd;
+  const tmp = path.join(process.env.TMPDIR || "/tmp", "tigrimos_sandbox");
+  fs.mkdirSync(tmp, { recursive: true });
+  return tmp;
+}
+
+// Helper to resolve project working folder (handles relative paths + old absolute paths)
 async function resolveWorkingFolder(project: Project): Promise<string> {
   if (!project.workingFolder) return "";
-  if (path.isAbsolute(project.workingFolder)) return project.workingFolder;
   const settings = await getSettings();
-  const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
-  return path.join(sandboxDir, project.workingFolder);
+  const sandboxDir = resolveSandboxDir(settings.sandboxDir);
+
+  let resolved: string;
+  if (path.isAbsolute(project.workingFolder)) {
+    resolved = project.workingFolder;
+  } else {
+    resolved = path.join(sandboxDir, project.workingFolder);
+  }
+
+  // Fallback: if absolute path doesn't exist (e.g. /root/cowork/ from old setup),
+  // use basename under sandboxDir
+  if (!fs.existsSync(resolved)) {
+    const fallback = path.join(sandboxDir, path.basename(resolved));
+    try { fs.mkdirSync(fallback, { recursive: true }); } catch {}
+    resolved = fallback;
+  }
+
+  return resolved;
 }
 
 // Helper to get sandbox-relative path for a file in a project
 async function projectFileRelPath(resolvedFolder: string, subFilePath: string): Promise<string> {
   const settings = await getSettings();
-  const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
+  const sandboxDir = resolveSandboxDir(settings.sandboxDir);
   const fullPath = path.join(resolvedFolder, subFilePath);
   return path.relative(sandboxDir, fullPath);
 }
@@ -49,8 +75,7 @@ export async function projectsRoutes(fastify: FastifyInstance) {
     // Resolve working folder path relative to sandbox
     let resolvedFolder = workingFolder || "";
     if (resolvedFolder && !path.isAbsolute(resolvedFolder)) {
-      const sandboxDir = settings.sandboxDir || path.resolve("sandbox");
-      resolvedFolder = path.join(sandboxDir, resolvedFolder);
+      resolvedFolder = path.join(resolveSandboxDir(settings.sandboxDir), resolvedFolder);
     }
 
     const project: Project = {
@@ -105,7 +130,8 @@ export async function projectsRoutes(fastify: FastifyInstance) {
 
     let content = "";
     if (project.workingFolder) {
-      const memoryPath = path.join(project.workingFolder, "memory.md");
+      const resolved = await resolveWorkingFolder(project);
+      const memoryPath = path.join(resolved, "memory.md");
       try {
         if (fs.existsSync(memoryPath)) {
           content = fs.readFileSync(memoryPath, "utf-8");
@@ -132,10 +158,11 @@ export async function projectsRoutes(fastify: FastifyInstance) {
 
     // Write to memory.md in the working folder
     if (project.workingFolder) {
-      const memoryPath = path.join(project.workingFolder, "memory.md");
+      const resolved = await resolveWorkingFolder(project);
+      const memoryPath = path.join(resolved, "memory.md");
       try {
-        if (!fs.existsSync(project.workingFolder)) {
-          fs.mkdirSync(project.workingFolder, { recursive: true });
+        if (!fs.existsSync(resolved)) {
+          fs.mkdirSync(resolved, { recursive: true });
         }
         fs.writeFileSync(memoryPath, content, "utf-8");
       } catch (err: any) {

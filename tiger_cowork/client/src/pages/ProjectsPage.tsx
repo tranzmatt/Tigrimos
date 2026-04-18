@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -185,7 +185,7 @@ function TextFilePreview({ file }: { file: string }) {
   );
 }
 
-function OutputCanvas({ files }: { files: string[] }) {
+const OutputCanvas = React.memo(function OutputCanvas({ files }: { files: string[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const images = files.filter((f) => ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(getFileExt(f)));
@@ -205,7 +205,7 @@ function OutputCanvas({ files }: { files: string[] }) {
           {images.map((f) => (
             <div key={f} className="canvas-image-wrap">
               <img
-                src={sandboxUrl(f, true)}
+                src={sandboxUrl(f)}
                 alt={f}
                 className={`canvas-image ${expanded === f ? "expanded" : ""}`}
                 onClick={() => setExpanded(expanded === f ? null : f)}
@@ -230,7 +230,7 @@ function OutputCanvas({ files }: { files: string[] }) {
             </a>
           </div>
           <div className="canvas-react-body">
-            <ReactComponentRenderer src={sandboxUrl(f, true)} />
+            <ReactComponentRenderer src={sandboxUrl(f)} />
           </div>
         </div>
       ))}
@@ -248,7 +248,7 @@ function OutputCanvas({ files }: { files: string[] }) {
               </a>
             </div>
           </div>
-          <iframe src={sandboxUrl(f, true)} className="canvas-html-iframe" title={f} />
+          <iframe src={sandboxUrl(f)} className="canvas-html-iframe" title={f} />
         </div>
       ))}
 
@@ -344,7 +344,7 @@ function OutputCanvas({ files }: { files: string[] }) {
       )}
     </div>
   );
-}
+}, (prev, next) => prev.files.length === next.files.length && prev.files.every((f, i) => f === next.files[i]));
 
 /* ─── Project Chat ─── */
 function ProjectChat({ project, allSkills }: { project: Project; allSkills: Skill[] }) {
