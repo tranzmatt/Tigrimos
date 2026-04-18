@@ -2,22 +2,21 @@
   <img src="tiger_cowork/picture/banner_tigrimos.png" alt="TigrimOS Banner" width="100%">
 </p>
 
-# TigrimOS v1.3.0
+# TigrimOS v1.3.1
 
 A self-hosted AI workspace with chat, code execution, parallel multi-agent orchestration, **cross-machine remote agents**, **Auto (AI create architecture)**, **live agent diagram**, **async parallel sub-agents**, and a skill marketplace. Runs on **macOS** and **Windows**. Everything executes inside a **secure Ubuntu sandbox** — no Docker required.
 
 AI-generated code and shell commands **cannot escape the sandbox** or touch your files without permission. Mix different AI providers in the same agent team — OpenAI-compatible APIs, Claude Code CLI, and Codex CLI. **Delegate tasks to remote TigrimOS instances** running on other machines — the orchestrator chooses the right agent based on persona and responsibility. **Auto mode** lets the AI analyze your prompt, design a custom multi-agent architecture (YAML), and boot all agents automatically — no manual configuration needed. **Live Agent Diagram** shows real-time orchestrator/worker graphs with status badges, tool tracking, and edge states. Agents work in **true parallel** using async task dispatching with improved **P2P swarm governance**. Connect external MCP servers to extend the AI's toolbox. Built with 16 built-in tools and designed for long-running sessions with smart context compression and checkpoint recovery.
 
-## What's New in v1.3.0
+## What's New in v1.3.1
 
-- **Live Agent Diagram** — real-time interactive graph showing orchestrator and worker agents with live status badges (Active/Waiting/Done), current tool calls, connection edge states (idle/working/awaiting result), and Bus protocol activity bar. Zoom, pan, and fullscreen controls for large agent teams.
-- **Task & Remote Task Logs** — unified chat log panel streams timestamped tool calls, agent thinking/reasoning, and inter-agent delegation events. Pause/resume scrolling and view logs per session.
-- **System Messages for Remote Tasks** — remote task delegation now includes system-level status messages showing remote agent progress, heartbeat, and completion across machines.
-- **Async Parallel Sub-Agent Algorithm** — agents work in true parallel using async task dispatching; the orchestrator delegates via `send_task` and awaits results concurrently with `wait_result`, enabling all workers to execute simultaneously.
-- **New P2P Algorithm** — improved peer-to-peer swarm with Contract Net Protocol bidding on the Blackboard, confidence-domain routing, and reputation-scored agent selection for decentralized task allocation.
-- **Per-Project Agent Mode Override** — each project can override the global sub-agent mode (Auto Spawn, Auto Create, Manual, Realtime, Auto Swarm) and pick its own YAML config, architecture type, agent count, and connection protocols.
-- **Full Chat Log with Agent Reasoning** — every chat session records a complete log capturing user messages, tool calls, sub-agent reasoning, and final responses.
-- **Finished Tasks History** — Tasks page shows the last 100 completed/cancelled/errored tasks with status, duration, agents used, and tools called.
+- **Fix custom skill Python execution** — skills with supporting Python scripts now execute correctly in the VM; fixed `sandboxDir` and `pythonPath` resolution so `run_python` no longer returns empty results when called from skill workflows
+- **Fix output panel constant reloading** — React charts, images, and iframes in the output panel no longer re-render every 2-3 seconds; stabilized with `React.memo` deep comparison, global component cache, and removed URL cache-busting
+- **Fix agent empty tool results** — when `run_python` returns empty stdout, errors and warnings from stderr are now promoted to stdout so the agent sees failures instead of fabricating answers
+- **Python error visibility** — user code is wrapped in try/except so uncaught exceptions always appear in stdout with full traceback
+- **VM settings persistence** — `sandboxDir` and `pythonPath` in `settings.json` are now auto-corrected before every service start via systemd `ExecStartPre`, surviving VM restarts
+- **Project path migration** — old absolute paths in `projects.json` (e.g. `/root/cowork/...`) are automatically migrated to relative paths during VM provisioning
+- **Terminal lands in /app** — VM terminal now opens in the application directory instead of `/root`
 
 > **Security first:** Everything runs inside a real Ubuntu sandbox. Your host file system is completely invisible to the AI unless you explicitly share a folder.
 
@@ -57,14 +56,14 @@ AI-generated code and shell commands **cannot escape the sandbox** or touch your
 
 ## Downloads
 
-Download from the [latest release](https://github.com/Sompote/Tigrimos/releases/tag/v1.3.0):
+Download from the [latest release](https://github.com/Sompote/Tigrimos/releases/tag/v1.3.1):
 
 | Platform | Download | Sandbox Technology |
 |----------|----------|--------------------|
-| macOS — Apple Silicon (M1/M2/M3/M4) | [**TigrimOS-v1.3.0-macOS-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.0/TigrimOS-v1.3.0-macOS-AppleSilicon.zip) | Apple Virtualization.framework |
-| macOS — Apple Silicon (macOS 26 Tahoe) | [**TigrimOS-v1.3.0-macOS-Tahoe-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.0/TigrimOS-v1.3.0-macOS-Tahoe-AppleSilicon.zip) | Apple Virtualization.framework |
-| macOS — Intel | [**TigrimOS-v1.3.0-macOS-Intel.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.0/TigrimOS-v1.3.0-macOS-Intel.zip) | Apple Virtualization.framework |
-| Windows 10/11 | [**TigrimOS-v1.3.0-Windows.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.0/TigrimOS-v1.3.0-Windows.zip) | WSL2 (Windows Subsystem for Linux) |
+| macOS — Apple Silicon (M1/M2/M3/M4) | [**TigrimOS-v1.3.1-macOS-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.1/TigrimOS-v1.3.1-macOS-AppleSilicon.zip) | Apple Virtualization.framework |
+| macOS — Apple Silicon (macOS 26 Tahoe) | [**TigrimOS-v1.3.1-macOS-Tahoe-AppleSilicon.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.1/TigrimOS-v1.3.1-macOS-Tahoe-AppleSilicon.zip) | Apple Virtualization.framework |
+| macOS — Intel | [**TigrimOS-v1.3.1-macOS-Intel.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.1/TigrimOS-v1.3.1-macOS-Intel.zip) | Apple Virtualization.framework |
+| Windows 10/11 | [**TigrimOS-v1.3.1-Windows.zip**](https://github.com/Sompote/Tigrimos/releases/download/v1.3.1/TigrimOS-v1.3.1-Windows.zip) | WSL2 (Windows Subsystem for Linux) |
 
 ## Requirements
 
@@ -95,8 +94,8 @@ Download from the [latest release](https://github.com/Sompote/Tigrimos/releases/
    brew install qemu
    ```
 3. Download the release zip for your Mac:
-   - **Apple Silicon** (M1/M2/M3/M4): [TigrimOS-v1.3.0-macOS-AppleSilicon.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.3.0/TigrimOS-v1.3.0-macOS-AppleSilicon.zip)
-   - **Intel**: [TigrimOS-v1.3.0-macOS-Intel.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.3.0/TigrimOS-v1.3.0-macOS-Intel.zip)
+   - **Apple Silicon** (M1/M2/M3/M4): [TigrimOS-v1.3.1-macOS-AppleSilicon.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.3.1/TigrimOS-v1.3.1-macOS-AppleSilicon.zip)
+   - **Intel**: [TigrimOS-v1.3.1-macOS-Intel.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.3.1/TigrimOS-v1.3.1-macOS-Intel.zip)
 4. Unzip — you get `TigrimOS.app` (or `TigrimOS_i.app`) and `tiger_cowork/` folder
 5. Keep both in the **same directory** (the app needs `tiger_cowork/` next to it)
 6. Double-click the `.app` to launch
@@ -107,7 +106,7 @@ That's it. Subsequent launches start in under a minute.
 
 ### Windows — Installer
 
-1. Download and unzip [TigrimOS-v1.3.0-Windows.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.3.0/TigrimOS-v1.3.0-Windows.zip)
+1. Download and unzip [TigrimOS-v1.3.1-Windows.zip](https://github.com/Sompote/Tigrimos/releases/download/v1.3.1/TigrimOS-v1.3.1-Windows.zip)
 2. Double-click **`TigrimOSInstaller.bat`**
 3. The graphical installer will guide you through:
    - Enabling WSL2 (may require a one-time restart)
@@ -434,7 +433,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 │  │  ┌──────────────────────────────────────┐  │  │
 │  │  │        Ubuntu 22.04 VM               │  │  │
 │  │  │                                      │  │  │
-│  │  │   TigrimOS v1.3.0│  │  │
+│  │  │   TigrimOS v1.3.1│  │  │
 │  │  │   ├── Fastify server :3001          │  │  │
 │  │  │   ├── Node.js 20                    │  │  │
 │  │  │   ├── Python 3 + numpy/pandas/...   │  │  │
@@ -464,7 +463,7 @@ wsl -d TigrimOS -u root -- bash -c "mkdir -p /opt/TigrimOS/tiger_cowork/shared &
 │  │  ┌──────────────────────────────────────┐  │  │
 │  │  │     Ubuntu 22.04 "TigrimOS" distro  │  │  │
 │  │  │                                      │  │  │
-│  │  │   TigrimOS v1.3.0│  │  │
+│  │  │   TigrimOS v1.3.1│  │  │
 │  │  │   ├── Fastify server :3001          │  │  │
 │  │  │   ├── Node.js 20                    │  │  │
 │  │  │   ├── Python 3 + numpy/pandas/...   │  │  │
